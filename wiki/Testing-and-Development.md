@@ -13,7 +13,9 @@ python -m pytest --doctest-modules src    # doctests embedded in the source (39)
 |---|---|
 | `test_identity.py` | typed ids, matching levels (name / student number / division), backups |
 | `test_unicode.py` | ASCII cleaning, odd inputs, roster import of accented names |
-| `test_incremental.py` | re-runs, edited rows, held applications, decisions |
+| `test_full_export.py` | full-export re-runs, edited rows as newer submissions, rebuilt tables, SABP rows that left the export |
+| `test_config.py` | unreadable config is never overwritten |
+| `test_review_fixes.py` | roster import, SABP fixes, WFNI matching, verbosity, config precedence, mail send |
 | `test_completed.py` | completed applications are final per term |
 | `test_stages.py` | SABP stages, merge, decisions |
 | `test_sap.py`, `test_wfni.py` | batches, reviewers, redaction, WFNI |
@@ -21,8 +23,8 @@ python -m pytest --doctest-modules src    # doctests embedded in the source (39)
 | `test_mail.py` | templates, recipients, notices, review prompt, send loop |
 | `test_lookup.py` | lookup tables |
 
-Not covered by tests (see [Code Review](Code-Review#test-gaps)): the `main.py` CLI and config merge, failed roster
-imports, `seating.py`, `SmtpSender`, and the "no student number column" SABP export.
+Not covered by tests (see [Code Review](Code-Review#test-gaps)): the argparse entry point of `main.py`, `seating.py` and
+the real `SmtpSender` connection.
 
 ## Fake data
 
@@ -39,7 +41,7 @@ generators are seeded, so output is reproducible.
 - Never write personal data to the log. Application ids are fine; names, emails and student numbers are not.
 - Any CSV that people open must be written with `SafeDictWriter` / `SafeWriter`, and read with `open_csv`.
 - Paths: use `absfile(...)`, never the current directory.
-- New behaviour on re-runs needs a test in `test_incremental.py` style: build the DB in `tmp_path`, run twice.
+- New behaviour on re-runs needs a test in `test_full_export.py` style: build the DB in `tmp_path`, run with the full export twice.
 
 ## Publishing this wiki
 

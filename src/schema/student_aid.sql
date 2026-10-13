@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS student_aid (
     uoft_uuid TEXT,
     verification_level INTEGER,
     match_method TEXT,
-    student_number TEXT NOT NULL,
+    student_number TEXT NOT NULL,  -- the last four digits only
     submission_ts TEXT,
     terms TEXT,
     status TEXT NOT NULL,

@@ -1,5 +1,6 @@
 import argparse
 import logging
+import shutil
 import sys
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from utsu_core.agm import process_agm
 from utsu_core.sap import issue_batches, merge_reviews, process_sap, record_decisions
 from utsu_core.seating import run_seating
 from utsu_std.database import backup_database, get_connection
-from utsu_std.utils import ConfigError, absfile, setup_logging, load_and_merge_config
+from utsu_std.utils import ConfigError, absfile, explicit_flags, setup_logging, load_and_merge_config
 
 logger = logging.getLogger(__name__)
 
@@ -42,24 +43,22 @@ def main(cfg):
     # Every run verifies the whole export against it, so new data takes effect on the next run.
     cursor = db.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='uoft_data';")
-    test = cursor.fetchone()
+    # a missing or empty table counts as missing: verifying against no students would leave everybody unverified
+    test = cursor.fetchone() and cursor.execute("SELECT 1 FROM uoft_data LIMIT 1").fetchone()
     reimport = bool(cfg.get('reimport_uoft_data'))
     if reimport or not test:
         if not test:
-            logger.info("Table 'uoft_data' does not exist in the database.")
+            logger.info("The UofT student data is missing or empty in the database.")
         if not cfg['import_uoft_data']:
             logger.error("Application is missing UofT student data but no import file is specified in the configuration.")
             raise ValueError("Application is missing UofT student data but no import file is specified in the configuration.")
         else:
             logger.info("Importing UofT student data from the specified file.")
-            # Implement the import logic here, e.g., read the CSV and populate the database
             uoft_data_path = Path(cfg['import_uoft_data'])
-            # check existence
-            if uoft_data_path.exists():
-                import_uoft_data(db, uoft_data_path)
-            else:
-                logger.error(f"File not found: {uoft_data_path}" )
-                quit()
+            if not uoft_data_path.exists():
+                logger.error(f"File not found: {uoft_data_path}")
+                raise FileNotFoundError(f"UofT student data file not found: {uoft_data_path}")
+            import_uoft_data(db, uoft_data_path)
     else:
         logger.info("Using the UofT student data already in the database (--reimport_uoft_data replaces it).")
 
@@ -145,6 +144,7 @@ def apply_testing_mode(args, parser) -> dict:
     if not any(cfg.get(flag) for flag in ACTION_FLAGS):  # these read the database the last run left behind
         build_fake_data()
         Path(cfg["db"]).unlink(missing_ok=True)
+        shutil.rmtree(Path(cfg["output_dir"]) / "sap_batches", ignore_errors=True)  # sheets of the old database
     return cfg
 
 
@@ -213,7 +213,8 @@ if __name__ == "__main__":
         # these flags are one-off actions: never saved to the config file
         try:
             args = resolve_paths(load_and_merge_config(
-                args, parser, transient=(*ACTION_FLAGS, "reimport_uoft_data", "no_backup", "program")))
+                args, parser, transient=(*ACTION_FLAGS, "reimport_uoft_data", "no_backup", "program"),
+                explicit=explicit_flags(parser)))
         except ConfigError as e:
             sys.exit(f"ERROR: {e}")
     setup_logging(args)

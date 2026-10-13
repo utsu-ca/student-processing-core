@@ -29,20 +29,20 @@ interested".
 Rows with no name and no student number are skipped; a row with a student number but no name is kept and stays
 unverified. Verification follows
 [Identity and Verification](Identity-and-Verification); re-run behaviour follows
-[Incremental Processing](Incremental-Processing-and-Integrity).
+[Full Exports and Integrity](Full-Exports-and-Integrity).
 
 ## Outputs (in `--output_dir`)
 
 | File | Contents |
 |---|---|
-| `verified.csv` | One binding, verified, not-held application per student: `uuid, submission_ts, full_name, id, email, personal_email, division, delegated, student_uuid, uoft_uuid, verification_level, match_method, flags, invalid_reason`, then `pref:<constituency>` columns. **Private.** This is the seating input. |
+| `verified.csv` | One binding, verified application per student: `uuid, submission_ts, full_name, id, email, personal_email, division, delegated, student_uuid, uoft_uuid, verification_level, match_method, flags`, then `pref:<constituency>` columns. **Private.** This is the seating input. |
 | `unverified.csv` | Same columns for binding applications that could not be verified. **Private.** |
-| `alerts_senate.csv` | Held / duplicate / non-binding applications ([alerts](Incremental-Processing-and-Integrity#alerts-files)) |
+| `alerts_senate.csv` | Duplicate / roster-mismatch / non-binding applications ([alerts](Full-Exports-and-Integrity#alerts-files)) |
 | `seats.csv` | `uuid, full_name, constituency, division, seat_type, preference` |
 | `unseated.csv` | `uuid, full_name, reason` |
 | `seating_run.json` | `seed, seats_file, applicants, seated, unseated, by_preference, unfilled_seats` |
 
-Held (invalid) applications are left out of `verified.csv` and therefore out of the seating.
+The `senate_application` table is rebuilt from the export on every run.
 
 ## Seats file
 

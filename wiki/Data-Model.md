@@ -1,8 +1,7 @@
 # Data Model
 
 All data is in one SQLite file (`--db`, default `secrets/db.sqlite`). Table definitions are in `src/schema/*.sql`; tables
-are created on demand and columns added by later versions are added to older databases automatically
-(`add_missing_columns`). Treat the database as **private**: it holds the roster and, for SABP, student numbers.
+are created on demand. Treat the database as **private**: it holds the roster and, for SABP, the last four digits of student numbers.
 
 ```mermaid
 erDiagram
@@ -17,7 +16,7 @@ There are no declared foreign keys; the relationships are by convention.
 
 ## `uoft_data` (roster)
 
-Dropped and re-created by every roster import.
+Dropped and re-created by every roster import (in one transaction: a failed import leaves the previous roster).
 
 | Column | Notes |
 |---|---|
@@ -32,7 +31,8 @@ Indexes: `idx_full_name`, `idx_trunc_id`. Required roster CSV columns: `First Na
 
 ## Application tables (shared columns)
 
-`senate_application`, `student_aid` and `agm_rsvp` share this tracking set:
+`senate_application`, `student_aid` and `agm_rsvp` share this set (`senate_application` and `agm_rsvp` are rebuilt from
+the export on every run; `student_aid` is kept, see [Full Exports](Full-Exports-and-Integrity#sabp-keeps-the-committees-work)):
 
 | Column | Meaning |
 |---|---|
@@ -43,8 +43,6 @@ Indexes: `idx_full_name`, `idx_trunc_id`. Required roster CSV columns: `First Na
 | `match_method` | `name only`, `name + student number`, `name + division`, `name + student number + division` |
 | `status` | `verified`, `unverified`, `superseded`, `non_binding`, `not_considered` |
 | `submission_ts` | the form timestamp as given |
-| `source_hash` | fingerprint of the form row as processed; NULLed by `--resolve_invalid` |
-| `invalid_reason` | set when a verified row was edited after processing; NULL means valid |
 | `import_date` | timestamp |
 
 ## `senate_application`
@@ -53,7 +51,7 @@ Adds `delegated` (`yes`/`no`). No names or emails are stored.
 
 ## `student_aid`
 
-Adds: `student_number` (**the number as typed on the form**, up to the full number; not NULL), `terms`, `stage`
+Adds: `student_number` (the **last four digits** only; empty when the form gave none or it could not be read), `terms`, `stage`
 (`scored`, `in_review`, `discuss`, `reconciled`, `decided`; NULL for unverified), `aid_type` (`LC`/`AP`),
 `requested_amount`, `wfni`, `emergency`, `flags` (`;`-separated), `batch`, `record`, `awarded_amount`, `decision`.
 `awarded_amount` and `decision` are set only by `--record_decisions` and never overwritten by reprocessing.
@@ -78,8 +76,8 @@ details are **not stored**; dietary and accessibility answers are only in the ou
 -- how many verified applications at each level
 SELECT verification_level, COUNT(*) FROM senate_application WHERE status = 'verified' GROUP BY 1;
 
--- applications that are held
-SELECT uuid, invalid_reason FROM student_aid WHERE invalid_reason IS NOT NULL;
+-- how many applications have each status
+SELECT status, COUNT(*) FROM student_aid GROUP BY status;
 
 -- SABP pipeline position
 SELECT stage, COUNT(*) FROM student_aid WHERE status = 'verified' GROUP BY stage;

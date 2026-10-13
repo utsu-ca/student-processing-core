@@ -4,7 +4,7 @@
 
 | File | Used for | Notes |
 |---|---|---|
-| Roster CSV (`--import_uoft_data`) | `uoft_data` | Columns `First Name`, `Last Name`, `Truncated Student Number`, `Faculty`, `Division`. Imported **once**. A cleaned copy `<name>_processed.csv` is written beside it (gitignored). |
+| Roster CSV (`--import_uoft_data`) | `uoft_data` | Columns `First Name`, `Last Name`, `Truncated Student Number`, `Faculty`, `Division`. Imported **once**; it is read and checked first, so a bad file leaves the previous roster in place. Blank lines are skipped. |
 | Senate export (`--verify_student`) | Senate | see [Senate and Seating](Senate-and-Seating#form-export) |
 | SABP export (`--sap_file`) | SABP | see [Student Aid Bursary Program](Student-Aid-Bursary-Program#form-export) |
 | AGM export (`--agm_file`) | AGM | see [AGM RSVPs](AGM-RSVPs#form-export) |
@@ -66,6 +66,6 @@ written, application ids are), and `config.json` (may contain SMTP host/username
 
 - Safe for the committee: `sap_batches/**`, `sap_merged_ratings.csv`, `agm_accommodations.csv`, `*_run.json`.
 - Never commit or email unprotected: anything marked **yes** above, the database and its backups, `config.json`.
-- `.gitignore` already covers `secrets/*`, `*.sqlite`, `verified.csv`, `unverified.csv`, `*_processed.csv`, `config.json`,
+- `.gitignore` already covers `secrets/*`, `*.sqlite`, `verified.csv`, `unverified.csv`, `config.json`,
   `*.log` and `testing/output/`. Other private files (for example `sap_verified.csv`) are only safe because they are
   written under `secrets/` by default. Do not point `--output_dir` at a tracked folder.

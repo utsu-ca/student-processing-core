@@ -22,24 +22,27 @@ python -m utsu_core.main --db secrets/db.sqlite --import_uoft_data secrets/uoft_
 
 Then read the log and these files in `secrets/output/`:
 
-- [ ] `alerts_*.csv`: anything with `ERROR` needs a person; see [alerts](Incremental-Processing-and-Integrity#alerts-files).
+- [ ] `alerts_*.csv`: anything with `ERROR` needs a person; see [alerts](Full-Exports-and-Integrity#alerts-files).
 - [ ] `*_run.json`: do the counts look right (rows read, verified, unverified)?
-- [ ] `unverified.csv` / `sap_unverified.csv` / `agm_unverified.csv`: why (`reason` column)? Typos are fixed by editing
-      the row in the form export, not in the program.
+- [ ] `unverified.csv` / `sap_unverified.csv` / `agm_unverified.csv`: why (`reason` column)? A student corrects a typo by
+      editing or re-submitting the form (Google Forms gives it a new timestamp), not in the program.
 
 ## 2. Update as responses arrive
 
-Export the **full** form again and re-run the same command (flags are remembered in `config.json`). New rows are processed;
-unverified rows that were edited are retried; verified rows are left alone. See [Incremental Processing](Incremental-Processing-and-Integrity).
+Export the **full** form again and re-run the same command (flags are remembered in `config.json`). Every application in
+the export is verified again and the newest verified one per student is binding. See
+[Full Exports and Integrity](Full-Exports-and-Integrity).
 
-If the roster itself changed: add `--reimport_uoft_data` (this verifies everything again).
+If the roster itself changed: add `--reimport_uoft_data`. A student who was verified stays verified (with a
+`roster_mismatch` alert if they no longer match), and unverified ones can now become verified.
 
 ## 3. Handle problems
 
 | Situation | Do this |
 |---|---|
-| Student replied to a "more information" email | Correct their row in the form export (same timestamp and email) and re-run |
-| `INTEGRITY ... invalid` alert | Decide: restore the row (auto-released) or `--resolve_invalid <id>` |
+| Student replied to a "more information" email | They edit or re-submit the form; export the full form again and re-run |
+| `roster_mismatch` alert | A verified application no longer matches the roster. Check the roster change was intended |
+| `missing_from_export` alert (SABP) | A verified application's row left the export (deleted, or edited into a new row). It is kept; check it |
 | `non_binding` warning | An unverified submission used a verified student's email. Check it is not impersonation |
 | `duplicate_verified` | Two verified applications for one student (per term): investigate in the database |
 | Wrong run | Restore the matching file from `<db folder>/backups/` |

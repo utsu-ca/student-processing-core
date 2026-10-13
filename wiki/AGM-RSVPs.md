@@ -46,8 +46,6 @@ At least one of the name columns or `Student Number` must exist.
 | `ambiguous_name` | name shared by several students |
 | `no_data_confirmation` | the data-processing confirmation is not "yes..." |
 | `no_uoft_email` | no email given |
-| `changed_after_processing` | verified row edited after processing (held) |
-| `invalid` | held |
 
 ## Outputs (in `--output_dir`)
 
@@ -57,24 +55,24 @@ At least one of the name columns or `Student Number` must exist.
 | `agm_list_in_person.csv` | The same columns, only people attending `In-person`. |
 | `agm_unverified.csv` | RSVPs that could not be verified, with `reason`. Keeps `uuid` and `student_uuid` for the "more information" emails. |
 | `agm_accommodations.csv` | Dietary and accessibility needs of verified attendees, by `uuid` only, no names, so a need cannot be traced to a person. |
-| `alerts_agm.csv` | Invalid (held), duplicate, ambiguous-match and non-binding RSVPs. |
+| `alerts_agm.csv` | Duplicate, ambiguous-match and non-binding RSVPs. |
 | `agm_run.json` | Counts (below). |
 
 All but `agm_accommodations.csv` carry names and emails: keep them private.
 
 **`meeting_preference`** is written as just `In-person` or `Virtual`. In-person means the answer contains "in person" /
 "in-person" (case-insensitive); everything else, including a blank answer, is `Virtual`. The database keeps the answer as
-given. Be aware that a negated phrase such as "not in person" would also count as in-person (see
-[Code Review](Code-Review#low)); fixed options on the form avoid the problem.
+given. A negated answer such as "not in person" is virtual; fixed options on the form avoid any doubt.
 
-A held (invalid) RSVP is left off all attendee lists and appears only in `alerts_agm.csv`.
+The `agm_rsvp` table is rebuilt from the export on every run, and the status follows the roster on every run (AGM is not
+sticky).
 
 ### `agm_run.json`
 
-`submissions_in_export`, `new_submissions_this_run`, `processed_this_run`, `binding_rsvps`, `verified_rsvps`,
+`submissions_in_export`, `binding_rsvps`, `verified_rsvps`,
 `verified_in_person`, `unverified_rsvps`, `ambiguous_matches`, `attendance` (In-person / Virtual counts), `match_method`,
-`unverified_reasons`, `dietary_requests`, `accessibility_requests`, `flags`, `non_binding`, `changed_after_processing`,
-`held_invalid`, `integrity_duplicates`, `alerts`. (`sap_run.json` uses the same names with `applications` instead of
+`unverified_reasons`, `dietary_requests`, `accessibility_requests`, `flags`, `non_binding`, `kept_verified_despite_roster`,
+`integrity_duplicates`, `alerts`. (`sap_run.json` uses the same names with `applications` instead of
 `rsvps`.)
 
 ## Door check-in

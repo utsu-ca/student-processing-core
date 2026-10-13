@@ -17,7 +17,7 @@ the standard library only; SQLite is the database).
 - **Running a real cycle?** [Operations Runbook](Operations-Runbook) is the step-by-step checklist.
 - **Looking up a flag?** [Command-Line Reference](Command-Line-Reference).
 - **Wondering what a file or column is?** [Input and Output Files](Input-and-Output-Files) and [Data Model](Data-Model).
-- **Why was an application held / superseded / not considered?** [Incremental Processing and Integrity](Incremental-Processing-and-Integrity).
+- **Why was an application superseded / not considered / flagged?** [Full Exports and Integrity](Full-Exports-and-Integrity).
 - **How is somebody matched to the roster?** [Identity and Verification](Identity-and-Verification).
 - **Changing the code?** [Architecture](Architecture) and [Testing and Development](Testing-and-Development).
 - **Code review findings:** [Code Review](Code-Review).
@@ -26,10 +26,10 @@ the standard library only; SQLite is the database).
 
 1. **One roster, three forms.** `uoft_data` (the roster) is imported once. Every form export (Senate, SABP, AGM) is
    matched against it by name, by the last 4 digits of the student number, or both.
-2. **Give the full export every time.** Every run re-reads the whole form export. Each row has a stable internal id
-   and a fingerprint, so the program knows which rows are new, which were edited, and which are done.
-3. **Verified means immutable.** A verified application is never re-processed. If its form row is edited later it is
-   marked *invalid* and **held** for a person to decide.
+2. **Give the full export every time.** Every run re-reads the whole form export and verifies every row. Google Forms
+   stamps an edit or re-submission with a new timestamp, so an edit is just a newer application.
+3. **A verified application is never downgraded** (Senate and SABP). If the roster changes and a verified student no
+   longer matches, the application stays verified and an alert is raised. AGM follows the roster on every run.
 4. **One binding application per student** (per term for SABP): the newest *verified* one. An unverified newcomer can
    never replace a verified application.
 5. **Private by default.** Outputs with names and emails stay in `secrets/` (gitignored). Committee-facing files are

@@ -119,11 +119,21 @@ def current_weights(path: Path | str | None = None) -> Weights:
 
 
 def points_for(table: dict[str, int], value: str) -> int | None:
-    """Points for an answer, or None when it is not a known option (the long 'negative amount' option matches by prefix)."""
+    """
+    Points for an answer, or None when it is not a known option. An answer must match a listed option exactly,
+    except that an option written with a trailing `*` in the weights file (a long option such as "A negative amount
+    (...)") matches any answer that starts with the rest of it.
+
+    >>> table = {"no": 1, "1": 1, "anegativeamount*": 5}
+    >>> points_for(table, "No"), points_for(table, "None of the above"), points_for(table, "10")
+    (1, None, None)
+    >>> points_for(table, "A negative amount (short-term debt)")
+    5
+    """
     key = _norm(value)
     if key in table:
         return table[key]
-    return next((p for k, p in table.items() if key.startswith(k)), None)
+    return next((p for k, p in table.items() if k.endswith("*") and key.startswith(k[:-1])), None)
 
 
 def compute_wfni(app: dict[str, str], weights: Weights | None = None) -> tuple[int | None, list[str]]:

@@ -45,7 +45,7 @@ flowchart LR
 |---|---|
 | `membership_not_confirmed` | the membership confirmation is not "yes" |
 | `unknown_bursary_type` | the bursary type is neither Living nor Academic |
-| `no_amount` | the requested amount cannot be read |
+| `no_amount` | the requested amount cannot be read, or is not a positive finite number |
 | `amount_over_max` | the amount is above the stream maximum |
 | `instant_approval_eligible` | the amount is under $150 (and not over the max) |
 | `no_statement` | the general statement is empty |
@@ -62,24 +62,22 @@ capped **circumstances** bonus (multi-select, "n/a" / "none" excluded).
 
 - Weights are in `data/wfni_weights.csv` (`field,answer,points`). **Edit and re-run; no code change.** The file is
   re-read when it changes and its SHA-256 is saved in `sap_run.json` (`wfni_weights_sha256`).
-- Answers are matched to the form's option text, ignoring case, spacing and "to" vs "-". `circumstances` has two rows:
-  `per_answer` and `cap`.
+- Answers are matched to the form's option text **exactly**, ignoring case, spacing and "to" vs "-". Only an answer
+  written with a trailing `*` in the weights file matches by its start (the long option is `A negative amount*`). Any
+  other answer is unknown and flags `wfni_incomplete`. `circumstances` has two rows: `per_answer` and `cap`.
 - Maximum score = sum of each question's highest answer + the circumstances cap. `high_wfni` is raised at
   `max // 2 + 1` (with the shipped weights: max 33, threshold 17).
-- A re-run recomputes `wfni` for every application, but review sheets already handed out keep their old score.
-
-> Matching is documented as exact (the long "A negative amount (...)" option aside), but the current implementation
-> falls back to a **prefix match for every question**, so an unlisted answer that merely *starts with* a listed one
-> (for example "None of the above" vs. "No") is scored silently instead of flagging `wfni_incomplete`. See
-> [Code Review](Code-Review#medium).
+- Every run recomputes `wfni` for every application in the export with the current weights, so editing the weights
+  changes the next run's scores. Review sheets already handed out keep their old score.
 
 ## Batches and anonymization
 
-- Verified, binding, non-held applications are cut into batches of at most `--batch_size` (default 50), **oldest
+- Verified, binding applications are cut into batches of at most `--batch_size` (default 50), **oldest
   submission first**. A record id looks like `B001-07` (batch 1, record 7).
 - Committee-facing files carry only the application `uuid` and the record id. Names, emails, phone numbers, student
   numbers, postal codes, links and the applicant's own name are redacted from free text (`[name]`, `[email]`, `[phone]`,
-  `[student number]`, `[postal code]`, `[link]`). Faculty is left out.
+  `[student number]`, `[postal code]`, `[link]`). A name is found however it is spelled (accents, case) and names of two
+  letters count too. Faculty is left out.
 - New applications start a new batch once the last one is full or has been assigned to reviewers, otherwise they top
   it up. Slots of superseded applications are never reused.
 
@@ -124,8 +122,9 @@ spread, a `suggested_amount` and a `status`:
 |---|---|---|---|---|---|---|
 | Rubric maximum | $0 | $125 | $300 | $650 | $900 | $1,500 |
 
-Invalid levels (not an integer 0-5) and unknown applications are logged as warnings. Held applications' ratings are
-ignored.
+Invalid levels (not an integer 0-5) and unknown applications are logged as warnings. Only the reviewers assigned to a
+batch count: a stray folder under `by_reviewer/` is reported and its ratings ignored. A rating that is blanked in a sheet
+is removed from `sap_review` on the next merge.
 
 ## Stages and decisions
 
@@ -145,10 +144,11 @@ python -m utsu_core.main --program sap --merge_reviews
 python -m utsu_core.main --program sap --record_decisions decisions.csv
 ```
 
-`decisions.csv` needs `uuid` and `decision`; `awarded_amount` is optional. Other columns (for example those of
-`sap_merged_ratings.csv`) are ignored, so the merged file can be filled in and used directly. Rows that cannot be
-recorded are listed and skipped: unknown application, unverified, held (invalid), missing decision, bad amount. A
-decision recorded before reconciliation is accepted with a warning (for example instant approvals).
+`decisions.csv` needs `uuid` and `decision`; `awarded_amount` is optional (`0` is allowed). Other columns (for example
+those of `sap_merged_ratings.csv`) are ignored, so the merged file can be filled in and used directly. Rows that cannot be
+recorded are listed and skipped: unknown application, unverified, missing decision, bad amount. A
+decision recorded before reconciliation is accepted with a warning (for example instant approvals). Recording an
+application again replaces its decision, with a warning; the same decision again with no amount keeps the stored amount.
 
 `decided` is the last stage: the application is **complete**, which makes it final for that term (any other
 application of the student for that term becomes `not_considered`). `sap_run.json` counts verified applications per
@@ -159,11 +159,11 @@ stage. Databases from before the `stage` column get it filled in on the next run
 
 | File | Contents |
 |---|---|
-| `sap_verified.csv` | **Private.** Master list of verified binding applications: `uuid, status, invalid_reason, student_uuid, uoft_uuid, verification_level, match_method, submission_ts, terms, id, full_name, email, faculty, stream, subsidies, requested_amount, wfni, emergency, flags, batch, record` |
+| `sap_verified.csv` | **Private.** Master list of verified binding applications: `uuid, status, student_uuid, uoft_uuid, verification_level, match_method, submission_ts, terms, id, full_name, email, faculty, stream, subsidies, requested_amount, wfni, emergency, flags, batch, record` |
 | `sap_unverified.csv` | **Private.** Same columns for unverified binding applications |
 | `sap_batches/` | Anonymized sheets (above) |
 | `sap_merged_ratings.csv` | Created by `--merge_reviews` |
-| `alerts_sap.csv` | Held / duplicate / non-binding / not-considered |
-| `sap_run.json` | Counts: submissions, new, processed, binding, verified, unverified, changed, held, alerts, duplicates, non-binding, not considered, `stages`, `wfni_weights_sha256`, `batches`, `batch_size`, `reviewers`, `emergency`, `flags` |
+| `alerts_sap.csv` | Duplicate / roster-mismatch / missing-from-export / overlapping-terms / non-binding / not-considered |
+| `sap_run.json` | Counts: submissions, binding, verified, unverified, alerts, duplicates, non-binding, not considered, `missing_from_export`, `kept_verified_despite_roster`, `stages`, `wfni_weights_sha256`, `batches`, `batch_size`, `reviewers`, `emergency`, `flags` |
 
 Database tables for SABP are described in [Data Model](Data-Model#student_aid).

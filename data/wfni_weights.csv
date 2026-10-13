@@ -1,8 +1,8 @@
 # SABP Weighted Financial Need Index (WFNI) weights (SAS-002 "Financial Need Index Weights").
 # One row per answer: field,answer,points. Edit and re-run; nothing else needs to change.
-#  - "answer" is matched ignoring case, spacing and "to" vs "-"; it must match the form's option text. The long
-#    "A negative amount (...)" option matches by its start. An answer not listed here counts as unknown and the
-#    application is flagged wfni_incomplete.
+#  - "answer" is matched ignoring case, spacing and "to" vs "-"; it must match the form's option text exactly. Only an
+#    answer ending in "*" matches by its start: the long "A negative amount (...)" option is written
+#    "A negative amount*". An answer not listed here counts as unknown and the application is flagged wfni_incomplete.
 #  - Every question below needs at least one row. The highest-scoring answers (plus the circumstances cap) set
 #    the maximum score, and the high_wfni flag is raised above half of it.
 #  - circumstances is a multi-select: "per_answer" points for each answer ticked (n/a and none excluded), up to "cap".
@@ -16,7 +16,7 @@ living_situation,Precariously Housed,1
 living_situation,Imminent risk of losing housing,4
 living_situation,Emergency sheltered,4
 living_situation,Unsheltered,6
-disposable_income,A negative amount,5
+disposable_income,A negative amount*,5
 disposable_income,Less than $100,4
 disposable_income,$100-200,3
 disposable_income,$200-500,2

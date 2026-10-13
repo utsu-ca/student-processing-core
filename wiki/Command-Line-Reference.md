@@ -7,42 +7,36 @@
 | Flag | Default | Meaning |
 |---|---|---|
 | `--testing` | off | Generate fake data, run on it, write everything to `testing/output/`. Ignores `config.json`. |
-| `--program` | `all` | `senate`, `sap`, `agm` or `all`. With `all`, a program is run only if its file is given (Senate always runs: see note). |
+| `--program` | `all` | `senate`, `sap`, `agm` or `all`. With `all`, SABP and AGM run only if their file is given, and Senate (and seating) is skipped, with a warning, if `--verify_student` does not exist. Never saved to `config.json`. |
 | `--verify_student` | `secrets/verify.csv` | **Senate** application export (CSV). Despite the name, this is the Senate form export. |
 | `--sap_file` | *(none)* | SABP form export. Required with `--program sap`. |
 | `--agm_file` | *(none)* | AGM RSVP export. Required with `--program agm`. |
-| `--import_uoft_data` | `secrets/uoft_data.csv` | Student roster CSV. Imported **only** if the database has no `uoft_data` table. |
-| `--reimport_uoft_data` | off | Replace the roster with `--import_uoft_data` and verify every application again. Never saved to `config.json`. |
+| `--import_uoft_data` | `secrets/uoft_data.csv` | Student roster CSV. Imported **only** if the database has no `uoft_data` table, or it is empty. A bad file leaves the previous roster in place. |
+| `--reimport_uoft_data` | off | Replace the roster with `--import_uoft_data`. Every run verifies the whole export, so the next run uses it. Never saved to `config.json`. |
 | `--batch_size` | `50` | Applications per SABP review batch. |
 | `--reviewers` | *(none)* | Comma-separated committee members (2+). Each SABP batch is assigned to two of them. |
 | `--seats_file` | `data/seats_senate.csv` | Seats per constituency (see [Senate and Seating](Senate-and-Seating#seats-file)). |
 | `--seed` | `2026` | Seed for seating tie-breaks. Same inputs + seed = same seating. |
 | `--output_dir` | `secrets/output` | Where result files are written. |
 
-> **Note on `--program all`:** the Senate step runs whenever `program` is `senate` or `all`, using `--verify_student`.
-> If that file does not exist the run stops with an error, so for SABP-only or AGM-only work pass `--program sap` or
-> `--program agm`.
-
 ### One-off actions
 
 These work on an existing database, do their one job and exit; they are never saved to `config.json`. If several are
-given, only the first in this order runs: `--merge_reviews`, `--issue_batches`, `--record_decisions`,
-`--resolve_invalid`.
+given, only the first in this order runs: `--merge_reviews`, `--issue_batches`, `--record_decisions`.
 
 | Flag | Argument | Meaning |
 |---|---|---|
-| `--merge_reviews` | *(switch)* | Merge reviewer sheets into `sap_merged_ratings.csv` and the `sap_review` table; advance stages. |
+| `--merge_reviews` | *(switch)* | Merge reviewer sheets into `sap_merged_ratings.csv` and the `sap_review` table; advance stages. Only the batch's assigned reviewers count. |
 | `--issue_batches` | `all` or `1,2` | Record that batch sheets were handed out outside the program. Those batches are then closed. |
-| `--record_decisions` | CSV path | Columns `uuid`, `decision`, optional `awarded_amount`. Moves applications to `decided`. |
-| `--resolve_invalid` | comma-separated ids | A person accepts held (invalid) applications; the next run takes the edited row as the baseline. |
+| `--record_decisions` | CSV path | Columns `uuid`, `decision`, optional `awarded_amount` (`0` is allowed). Moves applications to `decided`; recording again replaces the decision (with a warning). |
 
 ### Infrastructure flags
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--db` | `secrets/db.sqlite` | SQLite database file. Created if missing. |
-| `--config` | `config.json` | JSON settings file. |
-| `--verbosity` | `TRACE` | Use `INFO`, `DEBUG` or `TRACE`. Any other word currently falls back in a surprising way (see [Code Review](Code-Review#medium)). |
+| `--config` | `config.json` | JSON settings file. A file that cannot be read stops the run and is left unchanged. |
+| `--verbosity` | `TRACE` | `TRACE`, `DEBUG`, `INFO`, `WARNING` (or `WARN`), `ERROR` or `CRITICAL`, in any case. Anything else is refused. |
 | `--log_file` | `secrets/app.log` | Log (appended). Names and emails are not logged; application ids are. |
 | `--backup_dir` | *(next to the db, in `backups/`)* | Where timestamped database backups go. |
 | `--keep_backups` | `0` | Keep only the newest N backups (`0` keeps all). |
@@ -52,16 +46,14 @@ given, only the first in this order runs: `--merge_reviews`, `--issue_batches`, 
 
 For a normal (non-testing) run the final settings are built as:
 
-1. a flag whose value **differs from its built-in default** wins;
+1. a flag **given on the command line** wins (even if its value equals the built-in default);
 2. otherwise the value in `config.json`;
 3. otherwise the built-in default.
 
-Then **`config.json` is rewritten** with the result (except the one-off actions, `--reimport_uoft_data` and
+Then **`config.json` is rewritten** with the result (except the one-off actions, `--program`, `--reimport_uoft_data` and
 `--no_backup`). Consequences worth knowing:
 
 - Last run's `--sap_file`, `--reviewers`, etc. are remembered and reused automatically on the next run.
-- Because step 1 compares against the default, passing a flag **equal to its default** (for example `--seed 2026`) does
-  not override a different value stored in `config.json`. Edit the file or pass a different value.
 - Relative paths are saved as typed and resolved from the project root when used.
 - `config.json` is gitignored. It may also hold the `smtp` section used by [Emailing](Emailing#smtp-settings); that
   section is preserved when the file is rewritten.

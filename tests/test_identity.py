@@ -292,7 +292,7 @@ def test_a_newer_unverified_submission_never_replaces_a_verified_one(tmp_path, c
     r4 = run_senate(senate_file(tmp_path / "4.csv", [good, imposter, update]), conn, tmp_path)
     assert [a["submission_ts"] for a in r4["verified"]] == [update[0]]
     assert sorted(s for (s,) in conn.execute("SELECT status FROM senate_application")) == \
-        ["non_binding", "superseded", "verified"]
+        ["superseded", "superseded", "verified"]
 
 
 def test_with_nothing_verified_the_newest_unverified_submission_is_the_current_one(tmp_path):

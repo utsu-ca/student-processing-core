@@ -105,8 +105,13 @@ def is_in_person(meeting_preference: str) -> bool:
 
     >>> [is_in_person(v) for v in ("In-person", "in person", "In Person (Hart House)", "Online", "Virtual", "")]
     [True, True, True, False, False, False]
+    >>> is_in_person("No, I will not be attending in person"), is_in_person("Yes, I'll be attending in-person.")
+    (False, True)
     """
-    return bool(re.search(r"\bin[\s-]*person\b", meeting_preference or "", re.I))
+    text = meeting_preference or ""
+    if not re.search(r"\bin[\s-]*person\b", text, re.I):
+        return False
+    return not re.search(r"\b(not|never|cannot|can't|won't|unable)\b[^.;]*\bin[\s-]*person\b", text, re.I)
 
 
 def attendance(meeting_preference: str) -> str:

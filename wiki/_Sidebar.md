@@ -14,7 +14,7 @@
 
 **Concepts**
 - [Identity and Verification](Identity-and-Verification)
-- [Incremental Processing and Integrity](Incremental-Processing-and-Integrity)
+- [Full Exports and Integrity](Full-Exports-and-Integrity)
 - [Data Model](Data-Model)
 
 **Developing**

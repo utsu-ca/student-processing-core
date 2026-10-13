@@ -8,6 +8,7 @@ cut the verified ones into anonymized batches of general statements for the comm
 import csv
 import json
 import logging
+import math
 import re
 import sqlite3
 from datetime import datetime
@@ -19,7 +20,7 @@ from utsu_core.verification import match_students, setup_reader
 from utsu_core.wfni import compute_wfni, current_weights
 from utsu_std.csv_safe import SafeDictWriter, open_csv, write_rows
 from utsu_std.utils import absfile, application_uuid_for, clean_text, normalize_case, student_uuid_for
-from utsu_std.parsing_utils import split_multi
+from utsu_std.parsing_utils import get_trunc_id, split_multi
 
 logger = logging.getLogger(__name__)
 
@@ -41,19 +42,24 @@ REVIEW_FIELDS = ["record_id", "uuid", "stream", "subsidies", "requested_amount",
 # The WFNI answer weights live in data/wfni_weights.csv; see utsu_core/wfni.py.
 
 
-def parse_amount(value: str) -> float | None:
+def parse_amount(value: str, allow_zero: bool = False) -> float | None:
     """
+    A positive, finite dollar amount, or None (blank, text, `nan`, `inf`, negative, and zero unless `allow_zero`).
+
     >>> parse_amount("$1,500")
     1500.0
     >>> parse_amount("706.77")
     706.77
-    >>> parse_amount("abc") is None
-    True
+    >>> [parse_amount(v) for v in ("abc", "nan", "inf", "-50", "0")]
+    [None, None, None, None, None]
+    >>> parse_amount("0", allow_zero=True)
+    0.0
     """
     try:
-        return float(re.sub(r"[$,\s]", "", value or ""))
+        amount = float(re.sub(r"[$,\s]", "", value or ""))
     except ValueError:
         return None
+    return amount if math.isfinite(amount) and (amount > 0 or (allow_zero and amount == 0)) else None
 
 
 def redact(text: str, names: list[str] = ()) -> str:
@@ -85,6 +91,7 @@ def sap_uuid(app: dict[str, str]) -> str:
 def build_application(row: dict[str, str]) -> dict:
     """Turn one mapped form row into an application: cleaned fields, stream, amount, WFNI and review flags."""
     app = {k: (v or "").strip() for k, v in row.items() if isinstance(k, str)}
+    app["id"] = app.get("id", "")  # the form may have no student number column
     app["full_name"] = normalize_case(f"{app.get('first_name', '')} {app.get('last_name', '')}")
     bursary = app.get("bursary_type", "").lower()
     app["stream"] = LC if bursary.startswith("living") else AP if bursary.startswith("academic") else ""
@@ -210,7 +217,7 @@ def reviewer_id(name: str) -> str:
     >>> reviewer_id(" Ann  Lee ")
     'Ann_Lee'
     """
-    return re.sub(r"[^\w.-]+", "_", name.strip()).strip("_")
+    return re.sub(r"[^\w.-]+", "_", name.strip()).strip("_").lstrip(".")
 
 
 def parse_reviewers(value) -> list[str]:
@@ -298,19 +305,24 @@ def record_decisions(conn: sqlite3.Connection, path: Path | str) -> dict:
             uuid, decision, amount_text = row["uuid"], row["decision"], row.get("awarded_amount", "")
             if not uuid and not decision:
                 continue
-            found = conn.execute("SELECT status, stage FROM student_aid WHERE uuid = ?", (uuid,)).fetchone()
-            amount = parse_amount(amount_text) if amount_text else None
+            found = conn.execute("SELECT status, stage, decision, awarded_amount FROM student_aid WHERE uuid = ?",
+                                 (uuid,)).fetchone()
+            amount = parse_amount(amount_text, allow_zero=True) if amount_text else None
             if not found:
                 problems.append(f"line {line}: unknown application {uuid!r}")
             elif found[0] != "verified":
                 problems.append(f"line {line}: {uuid} is {found[0]}, not verified")
             elif not decision:
                 problems.append(f"line {line}: {uuid} has no decision")
-            elif amount_text and (amount is None or amount < 0):
+            elif amount_text and amount is None:
                 problems.append(f"line {line}: {uuid} has an invalid awarded_amount {amount_text!r}")
             else:
                 if found[1] in (None, "scored", "in_review"):
                     logger.warning(f"{uuid} was decided before its reviews were reconciled (stage {found[1]})")
+                if found[2] is not None:
+                    logger.warning(f"{uuid} already had the decision {found[2]!r} (awarded {found[3]}); replacing it")
+                    if not amount_text and decision == found[2]:  # the same decision again keeps its amount
+                        amount = found[3]
                 conn.execute("UPDATE student_aid SET decision = ?, awarded_amount = ?, stage = 'decided' "
                              "WHERE uuid = ?", (decision, amount, uuid))
                 recorded += 1
@@ -408,6 +420,9 @@ def merge_reviews(conn: sqlite3.Connection, output_dir: Path | str = "secrets/ou
     with open_csv(out / "sap_verified.csv") as f:
         applications = {row["uuid"]: row for row in csv.DictReader(f)}
     ensure_schema(conn)
+    assigned: dict[int, list[str]] = {}
+    for batch, reviewer in conn.execute("SELECT batch, reviewer FROM sap_batch_reviewer"):
+        assigned.setdefault(batch, []).append(reviewer)
 
     ratings: dict[str, dict[str, tuple[int, str]]] = {}
     cleared: list[tuple[str, str]] = []  # (uuid, reviewer) whose sheet now has no rating for it
@@ -419,6 +434,10 @@ def merge_reviews(conn: sqlite3.Connection, output_dir: Path | str = "secrets/ou
                 uuid, raw = row.get("uuid", ""), (row.get("need_level") or "").strip()
                 if uuid not in applications:
                     problems.append(f"{reviewer}: {sheet.name} has an unknown application {uuid!r}")
+                elif reviewer not in assigned.get(int(applications[uuid]["batch"]), ()):
+                    problems.append(f"{reviewer}: {sheet.name} is not a sheet assigned to this reviewer; its ratings "
+                                    f"are ignored")
+                    break
                 elif raw:
                     try:
                         level = int(float(raw))
@@ -430,10 +449,6 @@ def merge_reviews(conn: sqlite3.Connection, output_dir: Path | str = "secrets/ou
                     ratings.setdefault(uuid, {})[reviewer] = (level, (row.get("notes") or "").strip())
                 else:
                     cleared.append((uuid, reviewer))
-
-    assigned: dict[int, list[str]] = {}
-    for batch, reviewer in conn.execute("SELECT batch, reviewer FROM sap_batch_reviewer"):
-        assigned.setdefault(batch, []).append(reviewer)
 
     rows = []
     for uuid, app in sorted(applications.items(), key=lambda kv: (int(kv[1]["batch"]), int(kv[1]["record"]))):
@@ -495,10 +510,22 @@ ON CONFLICT(uuid) DO UPDATE SET student_uuid = excluded.student_uuid, uoft_uuid 
 """
 
 
+def last_four(student_number: str) -> str:
+    """
+    The last four digits of a student number as stored (empty when there is no readable number).
+
+    >>> last_four("1006639715"), last_four("xxxxx3971x"), last_four(""), last_four("12")
+    ('3971', '3971', '', '')
+    """
+    trunc = get_trunc_id(student_number)
+    return "" if trunc is None else f"{trunc:04d}"
+
+
 def save_to_db(conn: sqlite3.Connection, applications: list[dict]):
     """Add (or refresh) one student_aid row per application. Committee decisions already stored are kept."""
     ensure_schema(conn)
     rows = [{**a, "requested_amount": float(a["requested_amount"]) if a["requested_amount"] != "" else None,
+             "id": last_four(a["id"]),  # the database keeps only the last four digits, as the student data does
              "wfni": a["wfni"] if a["wfni"] != "" else None, "batch": a.get("batch"), "record": a.get("record"),
              "stage": a.get("stage"), "uoft_uuid": a.get("uoft_uuid"),
              "verification_level": a.get("verification_level"), "match_method": a.get("match_method"),
@@ -529,6 +556,32 @@ def stored_applications(conn: sqlite3.Connection, present: set[str]) -> list[dic
             for uuid, status, stage, student, terms, ts in conn.execute(
                 "SELECT uuid, status, stage, student_uuid, terms, submission_ts FROM student_aid "
                 "WHERE status IN ('verified', 'unverified')") if uuid not in present]
+
+
+def overlapping_terms(applications: list[dict]) -> list[dict]:
+    """
+    Alerts for a student whose binding applications name different term selections that share a term (for example
+    `Fall 2026` and `Fall 2026;Winter 2027`). One binding application per student per term is decided on the whole
+    selection, so these are not replaced by each other and a person has to decide which one stands.
+
+    >>> apps = [{"uuid": "a", "student_uuid": "s", "terms": "Fall 2026"},
+    ...         {"uuid": "b", "student_uuid": "s", "terms": "Fall 2026; Winter 2027"}]
+    >>> [(a["kind"], a["uuid"]) for a in overlapping_terms(apps)]
+    [('overlapping_terms', 'b')]
+    """
+    alerts, seen = [], {}
+    for app in sorted(applications, key=lambda a: (parse_submission_ts(a.get("submission_ts", "")) or datetime.min,
+                                                   a["uuid"])):
+        terms = {clean_text(t).casefold() for t in split_multi(app.get("terms", ""))}
+        for other_uuid, other_terms in seen.get(app.get("student_uuid") or app["uuid"], []):
+            if terms & other_terms and terms != other_terms:
+                alerts.append({"severity": "WARNING", "kind": "overlapping_terms", "program": "SABP",
+                               "uuid": app["uuid"], "student_uuid": app.get("student_uuid") or "",
+                               "detail": f"names terms that overlap with the student's application {other_uuid}, "
+                                         f"which is not replaced by it; a person has to decide which one stands"})
+                break
+        seen.setdefault(app.get("student_uuid") or app["uuid"], []).append((app["uuid"], terms))
+    return alerts
 
 
 def process_sap(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path | str = "secrets/output",
@@ -592,7 +645,7 @@ def process_sap(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
              "detail": "verified, but its form row is not in this export (the student edited or re-submitted it, or "
                        "the row was deleted); kept as it is, with its batch, ratings and decision"}
             for a in absent if a["status"] == "verified"]
-    alerts = run.alert(out, extra=gone)
+    alerts = run.alert(out, extra=[*gone, *overlapping_terms([a for a in run.current if a["status"] == "verified"])])
     stage_counts = {stage or "(none)": n for stage, n in conn.execute(
         "SELECT stage, COUNT(*) FROM student_aid WHERE status = 'verified' GROUP BY stage ORDER BY stage")}
 

@@ -4,7 +4,6 @@ from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 import sqlite3
-import csv
 
 from utsu_std.utils import absfile
 
@@ -42,25 +41,4 @@ def backup_database(db_path: Path | str, backup_dir: Path | str | None = None, k
             stale.unlink()
             logger.info(f"Removed old backup {stale}")
     return target
-
-def import_csv_to_db(csv_file: Path, table_name: str, conn: sqlite3.Connection):
-    """
-    Function to import CSV data into the specified table in the database.
-    Relies on the table's import_date column default (CURRENT_TIMESTAMP) to record when the data was imported.
-    """
-    try: 
-        cursor = conn.cursor()
-        with open(csv_file, newline='', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            headers = next(reader)
-            placeholders = ', '.join(['?'] * len(headers))
-            query = f"INSERT INTO {table_name} ({', '.join(headers)}) VALUES ({placeholders})"
-            for row in reader:
-                cursor.execute(query, row)
-        conn.commit()
-        logger.info(f"Data imported successfully into {table_name}")
-    except Exception as e:
-        logger.error(f"An error occurred: {e}")
-        conn.rollback()
-        raise e
 

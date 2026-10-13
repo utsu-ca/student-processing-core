@@ -15,19 +15,19 @@ import unicodedata
 logger = logging.getLogger(__name__)
 
 def setup_logging(args):
-    # Add extra logging level
-    addLoggingLevel('TRACE', logging.DEBUG - 5)
+    # Add extra logging level (once: this is also called by tests and tools in one process)
+    if not hasattr(logging, 'TRACE'):
+        addLoggingLevel('TRACE', logging.DEBUG - 5)
 
-    verbosity = args['verbosity']
+    verbosity = str(args['verbosity']).strip().upper()
     log_file = args['log_file']
 
-    level = logging.WARNING
-    if verbosity == 'INFO':
-        level = logging.INFO
-    elif verbosity == 'DEBUG':
-        level = logging.DEBUG
-    elif verbosity >= 'TRACE':
-        level = logging.TRACE # type: ignore
+    levels = {'TRACE': logging.TRACE, 'DEBUG': logging.DEBUG, 'INFO': logging.INFO,  # type: ignore
+              'WARNING': logging.WARNING, 'WARN': logging.WARNING, 'ERROR': logging.ERROR,
+              'CRITICAL': logging.CRITICAL}
+    if verbosity not in levels:
+        raise ValueError(f"--verbosity must be one of {', '.join(levels)}; got {args['verbosity']!r}")
+    level = levels[verbosity]
 
     # Console encodings like cp1252 can't print every character in names; replace instead of raising
     if hasattr(sys.stdout, "reconfigure"):
@@ -146,11 +146,19 @@ def load_config_file(path: str, strict: bool = False) -> dict[any, any]: # type:
     return cfg
 
 
-def load_and_merge_config(args: Namespace, parser: ArgumentParser, transient: tuple[str, ...] = ()):
+def explicit_flags(parser: ArgumentParser, argv: list[str] | None = None) -> set[str]:
+    """The settings (argparse `dest` names) that were actually given on the command line, even when equal to the default."""
+    sentinel = object()
+    probe = Namespace(**{action.dest: sentinel for action in parser._actions})
+    parser.parse_args(argv, namespace=probe)
+    return {key for key, value in vars(probe).items() if value is not sentinel}
+
+
+def load_and_merge_config(args: Namespace, parser: ArgumentParser, transient: tuple[str, ...] = (),
+                          explicit: set[str] | None = None):
     """
-    CLI flags override config values.
-    Only replace a value if the CLI used something *not equal*
-    to the defaultargparse value.
+    CLI flags override config values. A flag counts as given when it is in `explicit` (see `explicit_flags`), even if
+    its value equals the default; without `explicit`, only a value *different from* the default counts.
     `transient` flags apply to this run only: they are taken from the CLI and never saved to the config file.
     A config file that exists but cannot be read raises `ConfigError` and is left as it is (it would otherwise be
     overwritten, losing settings such as the `smtp` section).
@@ -162,10 +170,11 @@ def load_and_merge_config(args: Namespace, parser: ArgumentParser, transient: tu
         if key in ("config", "save_config", "testing"):
             continue
 
+        given = key in explicit if explicit is not None else value != parser.get_default(key)
         if key in transient:
             conf[key] = value
         # CLI overrides config if explicitly provided
-        elif value != parser.get_default(key):
+        elif given:
             conf[key] = value
         else:
             # fallback to config value if exists, otherwise the default

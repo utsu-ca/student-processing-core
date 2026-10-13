@@ -1,8 +1,8 @@
 """
 Mail-merge CLI. Run from the `src` directory:
 
-    python -m utsu_mail --list-fields
-    python -m utsu_mail senate_verified --dry-run
+    python -m utsu_mail --list_fields
+    python -m utsu_mail senate_verified --dry_run
     python -m utsu_mail senate_verified --recipients secrets/output/verified.csv
 """
 import argparse

@@ -23,9 +23,10 @@ name entirely in another script), a hash of the raw text is used so different pe
 Things to know:
 
 - Ids are **internal database keys**, not identities. Editing a name or student number does not change them, but a row
-  that **gains, loses or changes its email** gets new ids. Do not rely on ids outside the database.
+  that **gains, loses or changes its email** gets new ids (so does an edit, which Google Forms stamps with a new
+  timestamp). Do not rely on ids outside the database.
 - The email is typed by the applicant and not checked. Someone could use another student's email; that cannot replace a
-  verified application (see [Incremental Processing](Incremental-Processing-and-Integrity#one-binding-application-per-student)),
+  verified application (see [Full Exports](Full-Exports-and-Integrity#one-binding-application-per-student)),
   but someone who also knows the name and last four digits would still pass. The warnings in the log are how you notice.
 
 ## How a person is matched to the roster
