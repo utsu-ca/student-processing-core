@@ -6,7 +6,7 @@ from collections import Counter
 from pathlib import Path
 
 from utsu_core.senate import PREF_PREFIX
-from utsu_std.csv_safe import SafeDictWriter
+from utsu_std.csv_safe import SafeDictWriter, open_csv
 from utsu_std.parsing_utils import division_code
 from utsu_std.utils import absfile
 
@@ -48,7 +48,7 @@ def load_seats(seats_file: Path | str) -> dict[tuple[str, str], int]:
     if not path.exists():
         raise FileNotFoundError(f"Seats file not found: {path}")
 
-    with open(path, newline="", encoding="utf-8-sig") as f:
+    with open_csv(path) as f:
         lines = [line for line in f if line.strip() and not line.lstrip().startswith("#")]
     seats: dict[tuple[str, str], int] = {}
     for row in csv.DictReader(lines):
@@ -72,7 +72,7 @@ def load_seats(seats_file: Path | str) -> dict[tuple[str, str], int]:
 
 def load_applicants(verified_csv: Path | str) -> list[dict]:
     """Read verified.csv into applicant dicts with parsed preference tiers, sorted by uuid."""
-    with open(verified_csv, newline="", encoding="utf-8") as f:
+    with open_csv(verified_csv) as f:
         applicants = []
         for row in csv.DictReader(f):
             prefs = {k[len(PREF_PREFIX):]: tier_index(v) for k, v in row.items() if k.startswith(PREF_PREFIX)}

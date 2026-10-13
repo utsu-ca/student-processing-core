@@ -6,11 +6,39 @@ carriage return) is run as a formula by Excel and Google Sheets, so every text c
 open gets a leading apostrophe, which makes the spreadsheet show it as plain text. Plain numbers are left alone.
 `read_cell` undoes it for the files this program reads back.
 """
+import codecs
 import csv
+import io
+import logging
 import re
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
 _NUMBER = re.compile(r"^[+-]?\d+(\.\d+)?$")
+
+
+def read_text(path) -> str:
+    """
+    The text of a file that people may have saved from a spreadsheet: UTF-8 (with or without a BOM), UTF-16, or,
+    when it is neither, Windows-1252 (what Excel's plain "CSV" format uses) with a warning. Bytes that cannot be
+    decoded become U+FFFD instead of stopping the run.
+    """
+    data = Path(path).read_bytes()
+    if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
+        return data.decode("utf-16", errors="replace")
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        logger.warning(f"{path} is not UTF-8; reading it as Windows-1252 (Excel's plain CSV format). "
+                       f"Save it as 'CSV UTF-8' to be safe.")
+        return data.decode("cp1252", errors="replace")
+
+
+def open_csv(path) -> io.StringIO:
+    """A file object for `csv.reader` / `csv.DictReader`, decoded by `read_text`."""
+    return io.StringIO(read_text(path), newline="")
 
 
 def safe_cell(value):

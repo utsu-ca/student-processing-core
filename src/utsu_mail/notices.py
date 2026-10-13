@@ -55,7 +55,7 @@ def diagnose(app: dict[str, str], cursor: sqlite3.Cursor) -> tuple[str, list[str
         fields = [NAME_FIELD]
         if number and match_students([{"id": number}], cursor)[0].reason == "student number not found":
             fields.append(NUMBER_FIELD)
-    elif reason.startswith("student number shared"):
+    elif reason.startswith("student number shared") or reason.startswith("name has no plain letters"):
         fields = [NAME_FIELD]
     elif reason == "no name or student number given":
         fields = [NAME_FIELD, NUMBER_FIELD]

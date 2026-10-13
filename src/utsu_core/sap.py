@@ -13,13 +13,15 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from utsu_core.incremental import (OUTCOME_SQL_TYPES, add_missing_columns, apply_known, count_new, known_rows,
-                                   mark_superseded)
-from utsu_core.senate import keep_newest, parse_submission_ts
-from utsu_core.verification import match_students, setup_reader
+from utsu_core.incremental import (OUTCOME_SQL_TYPES, TRACKING_SQL_TYPES, add_missing_columns, apply_known,
+                                   count_new, dedupe_by_uuid, fingerprint, known_rows, select_current, set_statuses)
+from utsu_core.integrity import (build_alerts, changed_after_processing, duplicate_verified, hold, record_invalid,
+                                 restored_after_processing, write_alerts)
+from utsu_core.senate import parse_submission_ts, student_key, submission_rank
+from utsu_core.verification import mapped_names, match_students, setup_reader
 from utsu_core.wfni import compute_wfni, current_weights
-from utsu_std.csv_safe import SafeDictWriter
-from utsu_std.utils import absfile, application_uuid_for, normalize_case, student_uuid_for
+from utsu_std.csv_safe import SafeDictWriter, open_csv
+from utsu_std.utils import absfile, application_uuid_for, clean_text, normalize_case, student_uuid_for
 from utsu_std.parsing_utils import split_multi
 
 logger = logging.getLogger(__name__)
@@ -31,7 +33,8 @@ STREAM_NAMES = {LC: "Living-costs Bursary", AP: "Academic Pursuits Bursary"}
 MAX_REQUEST = {LC: 2500, AP: 1500}
 INSTANT_APPROVAL_BELOW = 150
 
-MASTER_FIELDS = ["uuid", "status", "student_uuid", "uoft_uuid", "verification_level", "match_method", "submission_ts",
+MASTER_FIELDS = ["uuid", "status", "invalid_reason", "student_uuid", "uoft_uuid", "verification_level", "match_method",
+                 "submission_ts",
                  "terms", "id", "full_name", "email", "faculty",
                  "stream", "subsidies", "requested_amount", "wfni", "emergency", "flags", "batch", "record"]
 REVIEW_FIELDS = ["record_id", "uuid", "stream", "subsidies", "requested_amount", "wfni", "emergency",
@@ -118,10 +121,15 @@ def build_application(row: dict[str, str]) -> dict:
 
 
 def read_applications(csv_file: Path) -> list[dict]:
-    reader = setup_reader(csv_file, absfile("data/conversion_table_sap.csv"), optional=IDENTITY_FIELDS,
-                          identity=IDENTITY_FIELDS)
-    applications = [build_application(row) for row in reader]
-    return [a for a in applications if a.get("id") or a["full_name"]]
+    mapping = absfile("data/conversion_table_sap.csv")
+    reader = setup_reader(csv_file, mapping, optional=IDENTITY_FIELDS, identity=IDENTITY_FIELDS)
+    fields = mapped_names(mapping)
+    applications = []
+    for row in reader:
+        app = build_application(row)
+        app["source_hash"] = fingerprint(row, fields)
+        applications.append(app)
+    return dedupe_by_uuid([a for a in applications if a.get("id") or a["full_name"]])
 
 
 def verify_applications(applications: list[dict], cursor: sqlite3.Cursor) -> None:
@@ -222,6 +230,11 @@ def parse_reviewers(value) -> list[str]:
 
 STAGES = ("scored", "in_review", "discuss", "reconciled", "decided")
 ISSUED = STAGES[1:]  # the stages after a batch has been handed to reviewers
+# An application is complete once the committee's decision is recorded: verification, the reviewers' need levels,
+# their reconciliation and the decision are all done, and it is ready for disbursement (which this program does not
+# track). A student's complete application for a term is final: no other application of theirs for that term is
+# considered (see process_sap).
+COMPLETE_STAGE = "decided"
 
 
 def ensure_schema(conn: sqlite3.Connection):
@@ -234,7 +247,7 @@ def ensure_schema(conn: sqlite3.Connection):
                             WHEN batch IN (SELECT batch FROM sap_batch_reviewer) THEN 'in_review'
                             WHEN status = 'verified' THEN 'scored' END""")
         conn.commit()
-    add_missing_columns(conn, "student_aid", {"student_uuid": "TEXT", **OUTCOME_SQL_TYPES})
+    add_missing_columns(conn, "student_aid", {**TRACKING_SQL_TYPES, **OUTCOME_SQL_TYPES})
 
 
 def mark_in_review(conn: sqlite3.Connection, batches) -> int:
@@ -243,7 +256,7 @@ def mark_in_review(conn: sqlite3.Connection, batches) -> int:
     if not batches:
         return 0
     cursor = conn.execute("UPDATE student_aid SET stage = 'in_review' WHERE stage = 'scored' AND status = 'verified' "
-                          f"AND batch IN ({','.join('?' * len(batches))})", batches)
+                          f"AND invalid_reason IS NULL AND batch IN ({','.join('?' * len(batches))})", batches)
     conn.commit()
     return cursor.rowcount
 
@@ -256,7 +269,7 @@ def issue_batches(conn: sqlite3.Connection, which: str) -> list[int]:
     """
     ensure_schema(conn)
     pending = {b for (b,) in conn.execute("SELECT DISTINCT batch FROM student_aid WHERE stage = 'scored' "
-                                          "AND batch IS NOT NULL")}
+                                          "AND invalid_reason IS NULL AND batch IS NOT NULL")}
     if which.strip().lower() == "all":
         wanted = pending
     else:
@@ -280,7 +293,7 @@ def record_decisions(conn: sqlite3.Connection, path: Path | str) -> dict:
     """
     ensure_schema(conn)
     recorded, problems = 0, []
-    with open(path, newline="", encoding="utf-8-sig") as f:
+    with open_csv(path) as f:
         reader = csv.DictReader(f)
         missing = {"uuid", "decision"} - {(h or "").strip() for h in reader.fieldnames or []}
         if missing:
@@ -290,12 +303,16 @@ def record_decisions(conn: sqlite3.Connection, path: Path | str) -> dict:
             uuid, decision, amount_text = row["uuid"], row["decision"], row.get("awarded_amount", "")
             if not uuid and not decision:
                 continue
-            found = conn.execute("SELECT status, stage FROM student_aid WHERE uuid = ?", (uuid,)).fetchone()
+            found = conn.execute("SELECT status, stage, invalid_reason FROM student_aid WHERE uuid = ?",
+                                 (uuid,)).fetchone()
             amount = parse_amount(amount_text) if amount_text else None
             if not found:
                 problems.append(f"line {line}: unknown application {uuid!r}")
             elif found[0] != "verified":
                 problems.append(f"line {line}: {uuid} is {found[0]}, not verified")
+            elif found[2]:
+                problems.append(f"line {line}: {uuid} is invalid ({found[2]}) and held for a person; resolve it first "
+                                f"(--resolve_invalid)")
             elif not decision:
                 problems.append(f"line {line}: {uuid} has no decision")
             elif amount_text and (amount is None or amount < 0):
@@ -356,7 +373,7 @@ def _write_sheet(rows: list[dict], number: int, directory: Path, reviewer: str |
 
 
 def _sheet_uuids(path: Path) -> set[str]:
-    with open(path, newline="", encoding="utf-8-sig") as f:
+    with open_csv(path) as f:
         return {row.get("uuid", "") for row in csv.DictReader(f)}
 
 
@@ -397,17 +414,20 @@ def merge_reviews(conn: sqlite3.Connection, output_dir: Path | str = "secrets/ou
     """
     out = Path(absfile(output_dir))
     batch_dir = out / "sap_batches"
-    with open(out / "sap_verified.csv", newline="", encoding="utf-8") as f:
+    with open_csv(out / "sap_verified.csv") as f:
         applications = {row["uuid"]: row for row in csv.DictReader(f)}
     ensure_schema(conn)
+    held = {u for (u,) in conn.execute("SELECT uuid FROM student_aid WHERE invalid_reason IS NOT NULL")}
 
     ratings: dict[str, dict[str, tuple[int, str]]] = {}
     problems: list[str] = []
     for sheet in sorted(batch_dir.glob("by_reviewer/*/batch_*.csv")):
         reviewer = sheet.parent.name
-        with open(sheet, newline="", encoding="utf-8-sig") as f:
+        with open_csv(sheet) as f:
             for row in csv.DictReader(f):
                 uuid, raw = row.get("uuid", ""), (row.get("need_level") or "").strip()
+                if uuid in held:  # invalid: held for a person, so its ratings are not used
+                    continue
                 if uuid not in applications:
                     problems.append(f"{reviewer}: {sheet.name} has an unknown application {uuid!r}")
                 elif raw:
@@ -455,7 +475,7 @@ def merge_reviews(conn: sqlite3.Connection, output_dir: Path | str = "secrets/ou
     # reviewed applications move on: agreed -> reconciled, far apart -> discuss, anything else stays in_review.
     # Decided applications, and ones with no rating yet, are left alone.
     stage_of = {"agreed": "reconciled", "discuss": "discuss"}
-    conn.executemany("UPDATE student_aid SET stage = ? WHERE uuid = ? "
+    conn.executemany("UPDATE student_aid SET stage = ? WHERE uuid = ? AND invalid_reason IS NULL "
                      "AND stage IN ('scored', 'in_review', 'discuss', 'reconciled')",
                      [(stage_of.get(r["status"], "in_review"), r["uuid"]) for r in rows if r["n_ratings"]])
     conn.commit()
@@ -470,11 +490,12 @@ def merge_reviews(conn: sqlite3.Connection, output_dir: Path | str = "secrets/ou
 _UPSERT = """
 INSERT INTO student_aid (uuid, student_uuid, uoft_uuid, verification_level, match_method, student_number,
                          submission_ts, terms, status, stage, aid_type, requested_amount, wfni, emergency, flags,
-                         batch, record)
+                         batch, record, source_hash)
 VALUES (:uuid, :student_uuid, :uoft_uuid, :verification_level, :match_method, :id, :submission_ts, :terms, :status,
-        :stage, :stream, :requested_amount, :wfni, :emergency, :flags, :batch, :record)
+        :stage, :stream, :requested_amount, :wfni, :emergency, :flags, :batch, :record, :source_hash)
 ON CONFLICT(uuid) DO UPDATE SET student_uuid = excluded.student_uuid, uoft_uuid = excluded.uoft_uuid,
     match_method = excluded.match_method, status = excluded.status,
+    source_hash = COALESCE(excluded.source_hash, student_aid.source_hash),
     verification_level = CASE WHEN excluded.status = 'verified' AND student_aid.verification_level = 3
                               THEN 3 ELSE excluded.verification_level END,
     stage = COALESCE(student_aid.stage, excluded.stage),
@@ -505,6 +526,22 @@ def write_master(applications: list[dict], path: Path):
     logger.info(f"Wrote {len(applications)} rows to {path}")
 
 
+def application_key(app: dict) -> str:
+    """Whose application and for which term: one binding application per student per term."""
+    return student_key(app) + "|" + clean_text(app.get("terms", "")).casefold()
+
+
+def completion_key(app: dict) -> tuple[str, str]:
+    return app.get("student_uuid") or "", clean_text(app.get("terms", "")).casefold()
+
+
+def completed_applications(conn: sqlite3.Connection) -> dict[tuple[str, str], str]:
+    """{(student_uuid, term): uuid} of the applications that are complete (see COMPLETE_STAGE)."""
+    return {(student, clean_text(terms or "").casefold()): uuid for uuid, student, terms in conn.execute(
+        "SELECT uuid, student_uuid, terms FROM student_aid WHERE stage = ? AND student_uuid IS NOT NULL",
+        (COMPLETE_STAGE,))}
+
+
 def process_sap(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path | str = "secrets/output",
                 batch_size: int = 50, reviewers=(), reverify: bool = False) -> dict:
     """
@@ -513,8 +550,14 @@ def process_sap(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     every application in the student_aid table. With `reviewers` (two or more names), each batch is also assigned
     to two of them and copied to sap_batches/by_reviewer/<name>/ for them to fill in; see merge_reviews.
 
-    Give the full export each time: applications already in student_aid keep their stored verification and
-    batch/record and are not processed again (unless `reverify`); only new ones are verified and added to batches.
+    Give the full export each time. An application is looked at once: a new one is verified. One that was processed
+    before keeps its stored verification and batch/record. An unverified one whose row was edited is processed again
+    (that is how a correction is made); a verified one is immutable and is never processed again, and an edit to its
+    row is reported by the integrity check (integrity.py). With `reverify` (after new student data) everything is
+    verified again. Per student and term, the newest verified application is the binding one; a newer unverified one
+    never replaces it (it becomes non-binding). Once a student's application for a term is complete (the committee
+    decision is recorded, see COMPLETE_STAGE) it is final: any other application of theirs for that term is not
+    considered.
     """
     reviewers = parse_reviewers(reviewers)
     csv_file = Path(csv_file)
@@ -522,21 +565,44 @@ def process_sap(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     out.mkdir(parents=True, exist_ok=True)
 
     applications = read_applications(csv_file)
-    current = keep_newest(applications)
     ensure_schema(conn)
     known = known_rows(conn, "student_aid")
-    to_check = apply_known(current, known, reverify)
-    logger.info(f"{len(applications)} SABP applications read; {len(applications) - len(current)} older duplicate "
-                f"submissions dropped; {count_new(current, known)} new, {len(to_check)} to verify, "
-                f"{len(current) - len(to_check)} already verified")
+    to_check = apply_known(applications, known, reverify)
+    changed = changed_after_processing(applications, known, "SABP")
+    released = restored_after_processing(applications, known)
+
+    # a completed application is final: the student's other applications for that term are not considered
+    completed = completed_applications(conn)
+    ignored = []
+    for app in applications:
+        done = completed.get(completion_key(app))
+        if done is None:
+            continue
+        if app["uuid"] == done:
+            app["final"] = True
+        elif app.get("status") in (None, "unverified", "non_binding"):
+            app["status"] = "not_considered"
+            ignored.append(app)
+            logger.warning(f"SABP application {app['uuid']} is not considered: the student already has a completed "
+                           f"application for this term ({done}).")
+    to_check = [a for a in to_check if a.get("status") != "not_considered"]
 
     verify_applications(to_check, conn.cursor())
     for app in to_check:
         if app["status"] == "unverified":
             logger.warning(f"UNVERIFIED SABP application {app['uuid']}")
-    verified = [a for a in current if a["status"] == "verified"]
+    current, statuses = select_current(applications, application_key, submission_rank)
+    statuses.update({a["uuid"]: "not_considered" for a in ignored})
+    logger.info(f"{len(applications)} SABP applications read; {count_new(applications, known)} new, "
+                f"{len(to_check)} verified now, {len(changed)} changed since processed; {len(current)} binding after "
+                f"{sum(s == 'superseded' for s in statuses.values())} superseded, "
+                f"{sum(s == 'non_binding' for s in statuses.values())} non-binding and "
+                f"{sum(s == 'not_considered' for s in statuses.values())} not considered")
+    # an invalid (held) application stays at its stage but goes no further: no batch, reconciliation or decision
+    verified, held = hold([a for a in current if a["status"] == "verified"])
     unverified = [a for a in current if a["status"] == "unverified"]
-    for app in current:  # scored on arrival; an application already further along keeps its stage (see _UPSERT)
+    saved = [a for a in dedupe_by_uuid(to_check + ignored + current) if a["uuid"] not in changed]
+    for app in saved:  # scored on arrival; an application already further along keeps its stage (see _UPSERT)
         app["stage"] = "scored" if app["status"] == "verified" else None
 
     placed = {u: (b, r) for u, b, r in conn.execute(
@@ -546,18 +612,30 @@ def process_sap(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
         "SELECT batch FROM sap_batch_reviewer UNION SELECT batch FROM student_aid WHERE batch IS NOT NULL "
         f"AND stage IN ({','.join(repr(s) for s in ISSUED)})")}
     batches = assign_batches(verified, batch_size, placed, closed)
-    save_to_db(conn, current)
-    mark_superseded(conn, "student_aid", {a["uuid"] for a in applications} - {a["uuid"] for a in current})
+    save_to_db(conn, saved)
+    set_statuses(conn, "student_aid", statuses)
+    record_invalid(conn, "student_aid", changed, released)
+    duplicates = duplicate_verified(conn, "student_aid", "SABP", ("student_uuid", "terms"))
     assignments = assign_reviewers(conn, len(batches), reviewers) if reviewers else {}
     write_master(verified, out / "sap_verified.csv")
     write_master(unverified, out / "sap_unverified.csv")
     write_batches(batches, out / "sap_batches", assignments, closed)
     mark_in_review(conn, assignments)  # newly assigned batches are now with reviewers
+    alerts = build_alerts(conn, "student_aid", "SABP", applications, statuses, duplicates)
+    write_alerts(out, "sap", alerts)
     stages = {stage or "(none)": n for stage, n in conn.execute(
         "SELECT stage, COUNT(*) FROM student_aid WHERE status = 'verified' GROUP BY stage ORDER BY stage")}
 
-    summary = {"applications": len(current), "new": count_new(current, known), "verified": len(verified),
-               "unverified": len(unverified), "stages": stages, "wfni_weights_sha256": current_weights().sha256,
+    summary = {"submissions_in_export": len(applications),
+               "new_submissions_this_run": count_new(applications, known),
+               "processed_this_run": len(to_check),
+               "binding_applications": len(current),
+               "verified_applications": len(verified), "unverified_applications": len(unverified),
+               "changed_after_processing": len(changed),
+               "held_invalid": len(held), "alerts": len(alerts), "integrity_duplicates": len(duplicates),
+               "non_binding": sum(s == "non_binding" for s in statuses.values()),
+               "not_considered": sum(s == "not_considered" for s in statuses.values()),
+               "stages": stages, "wfni_weights_sha256": current_weights().sha256,
                "batches": len(batches), "batch_size": batch_size,
                "reviewers": {str(b): rs for b, rs in assignments.items()},
                "emergency": sum(a["emergency"] for a in verified),
@@ -566,8 +644,8 @@ def process_sap(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     (out / "sap_run.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     logger.info(f"SABP: {len(verified)} verified, {len(unverified)} unverified, {len(batches)} batch(es) "
                 f"of up to {batch_size}")
-    return {"verified": verified, "unverified": unverified, "batches": batches, "assignments": assignments,
-            "summary": summary}
+    return {"verified": verified, "unverified": unverified, "held": held, "alerts": alerts, "batches": batches,
+            "assignments": assignments, "summary": summary}
 
 
 if __name__ == "__main__":

@@ -11,8 +11,9 @@ import logging
 import sqlite3
 from pathlib import Path
 
+from utsu_core.incremental import TRACKING_SQL_TYPES, add_missing_columns
 from utsu_core.verification import LEVEL_BOTH, LEVEL_PHYSICAL
-from utsu_std.csv_safe import read_cell
+from utsu_std.csv_safe import open_csv, read_cell
 from utsu_std.utils import student_uuid_for
 
 logger = logging.getLogger(__name__)
@@ -35,8 +36,10 @@ def record_physical(conn: sqlite3.Connection, path: Path | str) -> dict:
     tables = _tables(conn)
     if not tables:
         raise ValueError("The database has no applications yet; process a form export first")
+    for table in tables:  # a database from before the invalid hold gets its column
+        add_missing_columns(conn, table, TRACKING_SQL_TYPES)
     recorded, updated, problems = 0, 0, []
-    with open(path, newline="", encoding="utf-8-sig") as f:
+    with open_csv(path) as f:
         reader = csv.DictReader(f)
         for line, raw in enumerate(reader, start=2):
             row = {(k or "").strip().lower(): read_cell((v or "").strip()) for k, v in raw.items()}
@@ -50,7 +53,8 @@ def record_physical(conn: sqlite3.Connection, path: Path | str) -> dict:
                 continue
 
             levels = [lvl for t in tables for (lvl,) in conn.execute(
-                f"SELECT verification_level FROM {t} WHERE student_uuid = ? AND status = 'verified'", (student,))]
+                f"SELECT verification_level FROM {t} WHERE student_uuid = ? AND status = 'verified' "
+                f"AND invalid_reason IS NULL", (student,))]
             if not levels:
                 problems.append(f"line {line}: no verified application found for this student "
                                 f"(they must be found by the same email, student number or name as the form)")
@@ -59,7 +63,8 @@ def record_physical(conn: sqlite3.Connection, path: Path | str) -> dict:
             else:
                 for t in tables:
                     updated += conn.execute(f"UPDATE {t} SET verification_level = ? WHERE student_uuid = ? "
-                                            f"AND status = 'verified' AND verification_level = ?",
+                                            f"AND status = 'verified' AND invalid_reason IS NULL "
+                                            f"AND verification_level = ?",
                                             (LEVEL_PHYSICAL, student, LEVEL_BOTH)).rowcount
                 recorded += 1
     conn.commit()

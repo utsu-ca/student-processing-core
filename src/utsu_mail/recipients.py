@@ -1,9 +1,10 @@
 import csv
 import re
 import sqlite3
+import unicodedata
 from pathlib import Path
 
-from utsu_std.csv_safe import read_cell
+from utsu_std.csv_safe import open_csv, read_cell
 
 _EMAIL = re.compile(r"^[^@\s,;<>\"']+@[^@\s,;<>\"']+\.[^@\s,;<>\"']+$")
 
@@ -16,13 +17,21 @@ def valid_email(address: str) -> bool:
     False
     >>> valid_email("a@b.ca\\nBcc: x@y.ca")
     False
+    >>> valid_email("a\\u200b@b.ca")
+    False
+    >>> valid_email("jos\\u00e9@b.ca")
+    True
     """
-    return bool(_EMAIL.match(address or ""))
+    address = address or ""
+    # an invisible or control character (a zero-width space copied in with the address) is never a real address
+    if any(unicodedata.category(c) in ("Cc", "Cf", "Cs") for c in address):
+        return False
+    return bool(_EMAIL.match(address))
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
     """Read a recipient CSV; cells that this program made spreadsheet-safe (see utsu_std.csv_safe) are restored."""
-    with open(path, newline="", encoding="utf-8-sig") as f:
+    with open_csv(path) as f:
         return [{k: read_cell((v or "").strip()) for k, v in row.items() if k} for row in csv.DictReader(f)]
 
 

@@ -14,7 +14,7 @@ from utsu_mail import campaign
 from utsu_mail.recipients import read_csv
 from utsu_std.csv_safe import SafeDictWriter, read_cell, safe_cell
 from utsu_std.database import backup_database
-from utsu_std.utils import absfile, application_uuid_for, identity_key, student_uuid_for
+from utsu_std.utils import absfile, application_uuid_for, identity_key, parse_id, student_uuid_for
 
 SENATE_HEADERS = {"ts": "Timestamp", "user": "Username", "name": "Full ACORN-registered Name",
                   "id": "Student Number", "email": "UofT Email Address", "division": "Divisional Code",
@@ -158,7 +158,20 @@ def test_ids_are_built_from_the_email_and_fall_back_when_it_is_missing():
     assert application_uuid_for("sap", ts, "a@x.ca") != application_uuid_for("sap", "2026/10/02 9:00:00 a.m. AST", "a@x.ca")
 
 
-def test_correcting_a_row_in_place_keeps_its_ids_and_is_verified_again(tmp_path):
+def test_ids_say_what_they_identify():
+    ts = "2026/10/01 9:00:00 a.m. AST"
+    assert student_uuid_for("a@x.ca").startswith("student:email:")
+    assert student_uuid_for("", "1001231617").startswith("student:student_number:")
+    assert student_uuid_for(full_name="Ann Lee").startswith("student:name:")
+    assert application_uuid_for("sap", ts, "a@x.ca").startswith("application:sap:")
+    # the same text as two kinds of id never gives the same uuid
+    assert parse_id(student_uuid_for("a@x.ca"))[1] != parse_id(student_uuid_for(full_name="a@x.ca"))[1]
+    assert parse_id(application_uuid_for("sap", ts, "a@x.ca")) == ("application:sap",
+                                                                    application_uuid_for("sap", ts, "a@x.ca")[16:])
+    assert parse_id("plain") == ("", "plain")
+
+
+def test_a_row_is_corrected_in_place_until_it_is_verified_and_then_it_is_locked(tmp_path, caplog):
     conn = students_db(("Ann", "Lee", 3161))
     ts = "2026/10/01 9:00:00 a.m. AST"
     wrong = senate_file(tmp_path / "1.csv", [(ts, "Ann Lee", "1000000000", "ann@x.ca")])
@@ -166,10 +179,27 @@ def test_correcting_a_row_in_place_keeps_its_ids_and_is_verified_again(tmp_path)
     assert len(r1["unverified"]) == 1
     uuid, student = r1["unverified"][0]["uuid"], r1["unverified"][0]["student_uuid"]
 
+    # an unverified application is corrected by editing its row: same ids, processed again, now verified
     fixed = senate_file(tmp_path / "2.csv", [(ts, "Ann Lee", "1001231617", "ann@x.ca")])
     r2 = run_senate(fixed, conn, tmp_path)
+    assert r2["unverified"] == [] and r2["changed"] == []
     assert (r2["verified"][0]["uuid"], r2["verified"][0]["student_uuid"]) == (uuid, student)
+    assert r2["verified"][0]["verification_level"] == 2
+
+    # from then on it is immutable: editing it again makes it invalid and held, with an alert for a person
+    broken = senate_file(tmp_path / "3.csv", [(ts, "Ann Lee", "1000000000", "ann@x.ca")])
+    with caplog.at_level(logging.ERROR):
+        r3 = run_senate(broken, conn, tmp_path)
+    assert r3["changed"] == [uuid] and r3["verified"] == [] and [a["uuid"] for a in r3["held"]] == [uuid]
+    assert r3["held"][0]["verification_level"] == 2 and r3["held"][0]["invalid_reason"]
+    assert [a["kind"] for a in r3["alerts"]] == ["invalid"]
     assert conn.execute("SELECT status, verification_level FROM senate_application").fetchall() == [("verified", 2)]
+    assert any(r.levelname == "ERROR" and "INTEGRITY" in r.getMessage() for r in caplog.records)
+    # the alert repeats on every run until a person deals with it
+    caplog.clear()
+    with caplog.at_level(logging.ERROR):
+        r4 = run_senate(broken, conn, tmp_path)
+    assert [a["kind"] for a in r4["alerts"]] == ["invalid"] and [r.levelname for r in caplog.records] == ["ERROR"]
 
 
 def test_a_resubmission_with_the_same_email_replaces_the_older_one_even_if_the_number_changed(tmp_path):
@@ -178,7 +208,63 @@ def test_a_resubmission_with_the_same_email_replaces_the_older_one_even_if_the_n
                                             ("2026/10/02 9:00:00 a.m. AST", "Ann Lee", "1001231617", "ann@x.ca")])
     r = run_senate(form, conn, tmp_path)
     assert [a["verification_level"] for a in r["verified"]] == [2] and r["unverified"] == []
-    assert sorted(s for (s,) in conn.execute("SELECT status FROM senate_application")) == ["verified"]
+    assert sorted(s for (s,) in conn.execute("SELECT status FROM senate_application")) == ["superseded", "verified"]
+
+
+# ---- an unverified submission is non-binding ---------------------------------------------------------------
+
+def test_a_newer_unverified_submission_never_replaces_a_verified_one(tmp_path, caplog):
+    conn = students_db(("Ann", "Lee", 3161))
+    good = ("2026/10/01 9:00:00 a.m. AST", "Ann Lee", "1001231617", "ann@x.ca")
+    r1 = run_senate(senate_file(tmp_path / "1.csv", [good]), conn, tmp_path)
+    assert len(r1["verified"]) == 1
+
+    # someone submits with her email, a later time and wrong details
+    imposter = ("2026/10/09 9:00:00 a.m. AST", "Ann Lee", "1000000000", "ann@x.ca")
+    with caplog.at_level(logging.WARNING):
+        r2 = run_senate(senate_file(tmp_path / "2.csv", [good, imposter]), conn, tmp_path)
+    assert [a["uuid"] for a in r2["verified"]] == [r1["verified"][0]["uuid"]] and r2["unverified"] == []
+    assert len(r2["non_binding"]) == 1 and "non-binding" in caplog.text
+    assert sorted(s for (s,) in conn.execute("SELECT status FROM senate_application")) == ["non_binding", "verified"]
+
+    # a later run does not revisit it, and the verified application is still the binding one
+    caplog.clear()
+    r3 = run_senate(senate_file(tmp_path / "3.csv", [good, imposter]), conn, tmp_path)
+    assert len(r3["verified"]) == 1 and r3["unverified"] == [] and "non-binding" not in caplog.text
+
+    # a newer *verified* submission does replace it
+    update = ("2026/10/12 9:00:00 a.m. AST", "Ann Lee", "1001231617", "ann@x.ca")
+    r4 = run_senate(senate_file(tmp_path / "4.csv", [good, imposter, update]), conn, tmp_path)
+    assert [a["submission_ts"] for a in r4["verified"]] == [update[0]]
+    assert sorted(s for (s,) in conn.execute("SELECT status FROM senate_application")) == \
+        ["non_binding", "superseded", "verified"]
+
+
+def test_with_nothing_verified_the_newest_unverified_submission_is_the_current_one(tmp_path):
+    conn = students_db(("Ann", "Lee", 3161))
+    form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "Ann Lee", "1000000000", "ann@x.ca"),
+                                            ("2026/10/02 9:00:00 a.m. AST", "Ann Lee", "1000000001", "ann@x.ca")])
+    r = run_senate(form, conn, tmp_path)
+    assert r["verified"] == [] and [a["submission_ts"] for a in r["unverified"]] == ["2026/10/02 9:00:00 a.m. AST"]
+
+
+def test_sap_and_agm_unverified_resubmissions_are_non_binding_too(tmp_path):
+    conn = students_db(("Ann", "Lee", 3161))
+    later = {**LC_ROW, "Timestamp": "2026/10/09 9:00:00 a.m. AST", "Student Number": "1000000000"}
+    r = sap.process_sap(sap_form(tmp_path / "f.csv", [LC_ROW, later]), conn, output_dir=tmp_path / "out")
+    assert [a["verification_level"] for a in r["verified"]] == [2] and r["unverified"] == []
+    assert r["summary"]["non_binding"] == 1 and r["verified"][0]["batch"] == 1
+
+    header = AGM_HEADERS + ["Student Number"]
+    base = {"Timestamp": "2026/10/01 9:00:00 a.m. AST", "Username": "p@gmail.com", "Preferred Name": "",
+            "Preferred Pronouns": "", "ACORN-registered First Name": "Ann", "ACORN-registered Last Name ": "Lee",
+            "UofT Email Address": "ann@mail.utoronto.ca", "Meeting Preference": "Online",
+            "Do you have any dietary restrictions or food allergies?": "", "Accessibility Requirements": "",
+            "Data Processing Confirmation": "Yes", "Contact Consent": "Yes", "Student Number": ""}
+    wrong = {**base, "Timestamp": "2026/10/09 9:00:00 a.m. AST", "Student Number": "1000000000"}
+    a = agm.process_agm(write_rows(tmp_path / "a.csv", header, [base, wrong]), conn, output_dir=tmp_path / "out")
+    assert [x["match_method"] for x in a["verified"]] == ["name only"] and a["unverified"] == []
+    assert a["summary"]["non_binding"] == 1
 
 
 # ---- physical verification (level 3) -----------------------------------------------------------------------

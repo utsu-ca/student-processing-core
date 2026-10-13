@@ -1,10 +1,14 @@
 PRAGMA foreign_keys = ON;
 
--- One row per Student Aid Bursary Program application. `uuid` is derived from the submission timestamp and the
--- student's identity key (email; else student number; else name), so reprocessing the same form updates the same
--- row. `student_uuid` is the internal per-student id; `uoft_uuid` is the matching uoft_data.uuid (NULL when
--- unverified); `verification_level` is 1 for a name or student number alone, 2 for both, 3 once also checked in
--- person. The decision columns are filled in later by the committee and are never overwritten by reprocessing.
+-- One row per Student Aid Bursary Program application. `uuid` is the typed id `application:sap:<uuid>`, derived from
+-- the submission timestamp and the student's identity key (email; else student number; else name), so reprocessing
+-- the same form updates the same row. `student_uuid` is the typed per-student id; `uoft_uuid` is the matching
+-- uoft_data.uuid (NULL when unverified); `verification_level` is 1 for a name or student number alone, 2 for both,
+-- 3 once also checked in person. `status` is verified or unverified; later superseded or non_binding (see
+-- senate_application). `source_hash` fingerprints the form row as it was processed. `invalid_reason` is set when a
+-- verified application's row was edited after it was processed: it stays at its stage but is held (not batched,
+-- reconciled or decided) until a person deals with it; NULL means valid.
+-- The decision columns are filled in later by the committee and are never overwritten by reprocessing.
 -- `stage` tracks a verified application through the process and is never moved backwards by reprocessing:
 --   scored      verified and scored, in a batch that has not been handed to reviewers
 --   in_review   its batch was handed to reviewers (assigned, or marked with --issue_batches)
@@ -32,6 +36,8 @@ CREATE TABLE IF NOT EXISTS student_aid (
     record INTEGER,
     awarded_amount REAL,
     decision TEXT,
+    source_hash TEXT,
+    invalid_reason TEXT,
     import_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

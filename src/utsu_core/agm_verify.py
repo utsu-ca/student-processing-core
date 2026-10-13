@@ -69,23 +69,24 @@ def verify_rsvps(rsvps: list[dict], cursor: sqlite3.Cursor) -> tuple[list[dict],
 
 def verify_file(csv_file: Path | str, cursor: sqlite3.Cursor, output_dir: Path | str) -> list[dict]:
     """Read an RSVP export, verify it and write agm_verification.csv (private: names and emails) to output_dir."""
-    from utsu_core.agm import keep_newest_rsvp, read_rsvps  # agm imports this module, so import it late
+    from utsu_core.agm import current_rsvps, read_rsvps  # agm imports this module, so import it late
 
     cursor.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'uoft_data'")
     if not cursor.fetchone():
         raise ValueError("The database has no uoft_data table; import the UofT student data first")
-    rsvps = keep_newest_rsvp(read_rsvps(Path(csv_file)))
+    rsvps = read_rsvps(Path(csv_file))
     verified, unverified = verify_rsvps(rsvps, cursor)
+    current = current_rsvps(rsvps)
 
     out = Path(absfile(output_dir))
     out.mkdir(parents=True, exist_ok=True)
     with open(out / "agm_verification.csv", "w", newline="", encoding="utf-8") as f:
         writer = SafeDictWriter(f, fieldnames=REPORT_FIELDS, extrasaction="ignore")
         writer.writeheader()
-        writer.writerows(rsvps)
-    logger.info(f"AGM verification: {len(verified)} verified, {len(unverified)} unverified of {len(rsvps)}; "
-                f"report in {out / 'agm_verification.csv'}")
-    return rsvps
+        writer.writerows(current)
+    logger.info(f"AGM verification: {len(verified)} verified, {len(unverified)} unverified of {len(rsvps)} RSVPs "
+                f"({len(current)} binding); report in {out / 'agm_verification.csv'}")
+    return current
 
 
 def main():

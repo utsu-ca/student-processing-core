@@ -4,8 +4,9 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from utsu_std.csv_safe import open_csv
 from utsu_std.parsing_utils import get_trunc_id
-from utsu_std.utils import normalize_case
+from utsu_std.utils import clean_text, normalize_case
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ def trunc_of(student_number: str) -> int | None:
     (3971, None, None)
     """
     trunc = get_trunc_id(student_number or "")
-    return int(trunc) if trunc is not None and str(trunc).isdigit() else None
+    return int(trunc) if trunc is not None and str(trunc).isdecimal() else None
 
 
 def decide(name: str, number: str, by_name: list[tuple[str, int]], by_trunc: list[tuple[str, int]]) -> Match:
@@ -113,7 +114,11 @@ def match_students(people: list[dict], cursor: sqlite3.Cursor, name_key: str = "
                 by_name.setdefault(full_name, []).append((uoft_uuid, trunc_id))
                 by_trunc.setdefault(trunc_id, []).append((uoft_uuid, trunc_id))
 
-        for name, number in zip(names, numbers):
+        for raw, name, number in zip(chunk, names, numbers):
+            if not name and not number and str(raw.get(name_key) or "").strip():
+                # only a name was given, and nothing of it is plain ASCII (e.g. another script)
+                results.append(Match(None, None, "", "name has no plain letters (only A-Z letters are supported)"))
+                continue
             results.append(decide(name, number, by_name.get(name, []), by_trunc.get(trunc_of(number), [])))
     return results
 
@@ -192,12 +197,12 @@ def setup_reader(csv_file: Path, mapping_file: Path, optional=(), identity=()):
         raise FileNotFoundError(f"CSV file not found: {csv_file}")
 
     required_col = {form for form, name in name_table_mapping.items() if name not in set(optional)}
-    f_in = open(csv_file, newline='', encoding='utf-8-sig')
+    f_in = open_csv(csv_file)
     reader = csv.reader(f_in)
     headers = next(reader)
 
     # check if required columns are present in the headers; padding such as the form's "Faculty " is ignored
-    headers = [h.strip() for h in headers]
+    headers = [clean_text(h) for h in headers]
     if not required_col.issubset(set(headers)):
         missing_cols = required_col - set(headers)
         f_in.close()
@@ -220,6 +225,11 @@ def setup_reader(csv_file: Path, mapping_file: Path, optional=(), identity=()):
 
     # replace reader
     return csv.DictReader(f_in, fieldnames=new_headers)
+
+
+def mapped_names(mapping_file: Path) -> list[str]:
+    """The replacement names a lookup table gives the form's columns: the fields the program uses from a form."""
+    return sorted(construct_lookup_tables(mapping_file)[1])
 
 
 def name_table_mapping_forms(name_table_mapping: dict[str, str], names) -> list[str]:

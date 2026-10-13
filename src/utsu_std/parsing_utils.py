@@ -1,7 +1,7 @@
 import csv
 from pathlib import Path
 
-from utsu_std.utils import normalize_case
+from utsu_std.utils import clean_text, normalize_case
 
 
 def split_multi(value: str) -> list[str]:
@@ -48,14 +48,17 @@ def get_uoft_trunc_format(student_number: str) -> str:
 
 def get_trunc_id(id_txt: str):
     """
-    The 4 digits of a student number that the roster keeps, or None when the number cannot be read.
+    The 4 digits of a student number that the roster keeps, or None when the number cannot be read. Fullwidth and
+    superscript digits and invisible characters are cleaned first.
 
     >>> get_trunc_id("1006639715"), get_trunc_id(" 1006639715 "), get_trunc_id("xxxxx3971x"), get_trunc_id("3971")
     ('3971', '3971', '3971', '3971')
+    >>> get_trunc_id("1006639715\\u200b"), get_trunc_id("\\uff11\\uff10\\uff10\\uff16\\uff16\\uff13\\uff19\\uff17\\uff11\\uff15")
+    ('3971', '3971')
     >>> get_trunc_id("") is None, get_trunc_id("12345") is None
     (True, True)
     """
-    id_txt = (id_txt or "").strip()
+    id_txt = clean_text(id_txt).replace(" ", "")
     if len(id_txt) == 4:
         # string is likely already in the correct format
         return id_txt

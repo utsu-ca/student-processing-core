@@ -10,7 +10,7 @@ from typing import Callable
 
 from utsu_mail.templates import RenderedMessage, Template
 from utsu_mail.transport import SmtpSender, SmtpSettings, build_message
-from utsu_std.csv_safe import SafeWriter, read_cell
+from utsu_std.csv_safe import SafeWriter, open_csv, read_cell
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,7 @@ def prepare(template: Template, rows: list[dict[str, str]], email_field: str
 def already_sent(log_path: Path) -> set[str]:
     if not log_path.is_file():
         return set()
-    with open(log_path, newline="", encoding="utf-8") as f:
+    with open_csv(log_path) as f:
         return {read_cell(r["to"]).lower() for r in csv.DictReader(f) if r.get("status") == "sent"}
 
 

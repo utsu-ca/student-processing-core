@@ -1,4 +1,4 @@
-import json
+﻿import json
 import shutil
 from pathlib import Path
 
@@ -77,7 +77,7 @@ def test_editing_the_weights_file_changes_the_next_run(tmp_path, weights_file):
     weights_file.write_text(weights_file.read_text(encoding="utf-8").replace(
         "liquidity,$0 to $500,3", "liquidity,$0 to $500,10"), encoding="utf-8")
     second = sap.process_sap(form, conn, output_dir=out)  # same export, nothing new
-    assert second["summary"]["new"] == 0 and second["verified"][0]["wfni"] == 24
+    assert second["summary"]["new_submissions_this_run"] == 0 and second["verified"][0]["wfni"] == 24
     assert conn.execute("SELECT wfni FROM student_aid").fetchone() == (24,)
     assert json.loads((out / "sap_run.json").read_text())["wfni_weights_sha256"] != sha
 

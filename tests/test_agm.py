@@ -64,7 +64,7 @@ def test_process_agm_verifies_by_name_and_dedupes(tmp_path):
     accommodations = (out / "agm_accommodations.csv").read_text(encoding="utf-8")
     assert "Halal" in accommodations and "Ann" not in accommodations and "ann@" not in accommodations
     assert conn.execute("SELECT status, COUNT(*) FROM agm_rsvp GROUP BY status ORDER BY status").fetchall() \
-        == [("unverified", 2), ("verified", 2)]
+        == [("superseded", 1), ("unverified", 2), ("verified", 2)]
     # the stored rows carry no names or emails
     assert "Ann" not in str(conn.execute("SELECT * FROM agm_rsvp").fetchall())
 
@@ -86,8 +86,48 @@ def test_everyone_and_in_person_lists(tmp_path):
 
     assert names("agm_list_all.csv") == ["Ed Abe", "Bo Chan", "Ann Lee"]  # by last name
     assert names("agm_list_in_person.csv") == ["Ed Abe", "Ann Lee"]
-    assert result["summary"]["in_person"] == 2 and result["summary"]["unverified"] == 1
+    assert result["summary"]["verified_in_person"] == 2 and result["summary"]["unverified_rsvps"] == 1
     assert [r["full_name"] for r in result["in_person"]] == ["Ed Abe", "Ann Lee"]
+
+
+def test_door_lists_show_a_simple_attendance_and_no_ids(tmp_path):
+    form = form_csv(tmp_path / "rsvp.csv", [
+        rsvp("2026/10/01 9:00:00 a.m. AST", "Ann", "Lee", "ann@mail.utoronto.ca", meeting="Yes, I'll be attending in-person."),
+        rsvp("2026/10/01 10:00:00 a.m. AST", "Bo", "Chan", "bo@mail.utoronto.ca", meeting="No, I will be attending virtually."),
+        rsvp("2026/10/01 11:00:00 a.m. AST", "Cy", "Doe", "cy@mail.utoronto.ca", meeting=""),  # blank: Virtual
+        rsvp("2026/10/01 12:00:00 p.m. AST", "Di", "Fox", "di@mail.utoronto.ca", meeting="Undecided", dietary="Vegan"),
+    ])
+    conn = students_db(("Ann", "Lee", 3161), ("Bo", "Chan", 9111), ("Cy", "Doe", 5000), ("Di", "Fox", 6000))
+    out = tmp_path / "out"
+    result = agm.process_agm(form, conn, output_dir=out)
+
+    with open(out / "agm_list_all.csv", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert list(rows[0]) == ["last_name", "first_name", "preferred_name", "pronouns", "email", "meeting_preference",
+                             "contact_ok", "flags", "verification_level", "checked_in"]
+    assert {r["email"].split("@")[0]: r["meeting_preference"] for r in rows} == {
+        "ann": "In-person", "bo": "Virtual", "cy": "Virtual", "di": "Virtual"}  # blank or unclear is Virtual
+    assert "uuid" not in rows[0] and "application:" not in (out / "agm_list_all.csv").read_text(encoding="utf-8")
+    assert [r["first_name"] for r in csv.DictReader(open(out / "agm_list_in_person.csv", encoding="utf-8"))] == ["Ann"]
+    # the same simple values everywhere, including the accommodations and the run summary
+    assert {r["meeting_preference"] for r in csv.DictReader(open(out / "agm_accommodations.csv", encoding="utf-8"))} == {"Virtual"}
+    assert result["summary"]["attendance"] == {"In-person": 1, "Virtual": 3}
+    # the stored row keeps the original answer
+    assert conn.execute("SELECT meeting_preference FROM agm_rsvp WHERE meeting_preference = ''").fetchall() == [("",)]
+
+
+def test_the_run_summary_has_descriptive_names(tmp_path):
+    form = form_csv(tmp_path / "rsvp.csv", [
+        rsvp("2026/10/01 9:00:00 a.m. AST", "Ann", "Lee", "ann@mail.utoronto.ca"),
+        rsvp("2026/10/02 9:00:00 a.m. AST", "Ann", "Lee", "ann@mail.utoronto.ca"),  # a later submission replaces it
+        rsvp("2026/10/01 10:00:00 a.m. AST", "Cy", "Doe", "cy@mail.utoronto.ca")])
+    conn = students_db(("Ann", "Lee", 3161))
+    s = agm.process_agm(form, conn, output_dir=tmp_path / "out")["summary"]
+    assert (s["submissions_in_export"], s["new_submissions_this_run"], s["processed_this_run"],
+            s["binding_rsvps"], s["verified_rsvps"], s["unverified_rsvps"]) == (3, 3, 3, 2, 1, 1)
+    assert not {"new", "rsvps", "in_person", "verified", "unverified"} & set(s)
+    again = agm.process_agm(form, conn, output_dir=tmp_path / "out")["summary"]
+    assert (again["new_submissions_this_run"], again["processed_this_run"], again["binding_rsvps"]) == (0, 0, 2)
 
 
 def test_in_person_detection():

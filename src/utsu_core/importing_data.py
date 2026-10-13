@@ -5,9 +5,21 @@ import sqlite3
 from pathlib import Path
 
 from utsu_std.database import import_csv_to_db
-from utsu_std.utils import absfile, generate_uuid, normalize_case
+from utsu_std.csv_safe import open_csv
+from utsu_std.utils import absfile, clean_text, normalize_case, typed_uuid
 
 logger = logging.getLogger(__name__)
+
+
+def ascii_digits(text: str) -> str:
+    """
+    The digits of a text and nothing else. The text is made ASCII first, so fullwidth and superscript digits count
+    (other scripts' digits are dropped with the rest of the non-ASCII text).
+
+    >>> ascii_digits("xxxxx3971x"), ascii_digits("\\uff13\\uff19\\u00b3"), ascii_digits("\\u0667\\u0661")
+    ('3971', '393', '')
+    """
+    return "".join(c for c in clean_text(text) if c.isdigit())
 
 
 def import_uoft_data(conn: sqlite3.Connection, csv_file: Path):
@@ -51,10 +63,10 @@ def preprocess_uoft_csv(csv_file: Path):
 
     required_col = ("First Name", "Last Name", "Truncated Student Number", "Faculty", "Division")
     processed_csv_file = csv_file.with_name(csv_file.stem + "_processed.csv")
-    with open(csv_file, newline='', encoding='utf-8-sig') as f_in, \
+    with open_csv(csv_file) as f_in, \
             open(processed_csv_file, 'w', newline='', encoding='utf-8') as f_out:
         reader = csv.reader(f_in)
-        headers = next(reader)
+        headers = [clean_text(h) for h in next(reader)]
 
         # check if required columns are present in the headers
         if not set(required_col).issubset(set(headers)):
@@ -82,14 +94,14 @@ def preprocess_uoft_csv(csv_file: Path):
             faculty_indx = headers.index("Faculty")
             division_indx = headers.index("Division")
 
-            row_dict["trunc_id"] = re.sub(r'\D+', '', row[trunc_id_indx]) # use regex, keep numeric
+            row_dict["trunc_id"] = ascii_digits(row[trunc_id_indx])
             row_dict["last_name"] = normalize_case(row[last_name_indx])
             row_dict["first_name"] = normalize_case(row[first_name_indx])
             row_dict["full_name"] = f"{row_dict["first_name"]} {row_dict["last_name"]}"
-            row_dict["faculty"] = row[faculty_indx].upper().strip()
-            row_dict["division"] = row[division_indx].upper().strip()
+            row_dict["faculty"] = clean_text(row[faculty_indx]).upper()
+            row_dict["division"] = clean_text(row[division_indx]).upper()
             # generate UUID; should be safe for UUID as .values() returns in insertion order.
-            row_dict["uuid"] = generate_uuid("".join(row_dict.values()))
+            row_dict["uuid"] = typed_uuid("".join(row_dict.values()), "roster")
 
             writer.writerow(row_dict)
     return processed_csv_file

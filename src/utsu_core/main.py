@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from utsu_core.importing_data import import_uoft_data, preprocess_uoft_csv
+from utsu_core.integrity import resolve_invalid
 from utsu_core.physical import record_physical
 from utsu_core.senate import verify_senators
 from utsu_core.agm import process_agm
@@ -41,6 +42,13 @@ def main(cfg):
         print(f"Recorded {result['recorded']} decision(s); {len(result['problems'])} row(s) skipped")
         for problem in result['problems']:
             print(f"  {problem}")
+        return
+
+    if cfg.get('resolve_invalid'):
+        ids = [i.strip() for i in str(cfg['resolve_invalid']).split(",") if i.strip()]
+        resolved = resolve_invalid(db, ids)
+        print(f"Released {len(resolved)} application(s) from hold; the next run takes their current form row as the "
+              f"baseline" + (f". Not held or unknown: {sorted(set(ids) - set(resolved))}" if len(resolved) < len(ids) else ""))
         return
 
     if cfg.get('record_physical'):
@@ -163,7 +171,7 @@ TESTING_DIR = "testing"
 PATH_KEYS = ("verify_student", "sap_file", "agm_file", "import_uoft_data", "db", "log_file", "output_dir", "seats_file",
              "record_decisions", "record_physical", "backup_dir")
 # one-off actions that work on the last run's database: never rebuilt in testing mode, never saved to the config
-ACTION_FLAGS = ("merge_reviews", "issue_batches", "record_decisions", "record_physical")
+ACTION_FLAGS = ("merge_reviews", "issue_batches", "record_decisions", "record_physical", "resolve_invalid")
 
 
 def resolve_paths(cfg: dict) -> dict:
@@ -240,6 +248,9 @@ if __name__ == "__main__":
                              "batch numbers like 1,2. Those batches are then never changed or added to")
     parser.add_argument("--record_decisions", default="",
                         help="CSV with uuid, decision and awarded_amount columns: record the final SABP decisions")
+    parser.add_argument("--resolve_invalid", default="",
+                        help="Comma separated ids of invalid (held) applications that a person has looked at and "
+                             "accepts: the hold is lifted and the next run takes their current form row as the baseline")
     parser.add_argument("--record_physical", default="",
                         help="CSV of students checked in person (email, student_number or full_name; optional "
                              "checked_in column): raises their verified applications to verification level 3")

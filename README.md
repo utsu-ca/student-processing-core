@@ -21,33 +21,78 @@ Pass `--reimport_uoft_data` to replace it (everything is then verified again). W
 `config.json` (flags override it); `--merge_reviews` and `--reimport_uoft_data` are never saved there.
 
 The Senate, SABP and AGM form exports are meant to be re-run as they grow: give the **full export** each time. Every
-application has an internal `uuid` (see [Identity and verification levels](#identity-and-verification-levels)),
-recorded in `senate_application`, `student_aid` or `agm_rsvp`, so a run:
+application has an internal typed `uuid` (see [Identity and verification levels](#identity-and-verification-levels)),
+recorded in `senate_application`, `student_aid` or `agm_rsvp`. Each row is fingerprinted (the form fields the program
+uses, stored as `source_hash`), so a run knows which rows are new and which were edited. What happens to an application:
 
-- **verifies the rows that need it**: new ones, and ones that were unverified last time (a corrected row, a reply that
-  was added, or new student data). Rows already verified keep their stored result. `N new, M to verify, K already
-  verified` is logged and `new` is in `sap_run.json` / `agm_run.json`. Output files (`verified.csv`, the AGM lists, ...)
-  are rebuilt from the whole export;
-- marks an older submission `superseded` when the same student (the same email) submits again; the newest is the one used;
-- for SABP, keeps every application's batch and record. New applications start a new batch once the last one is full
-  or has been assigned to reviewers, and otherwise top it up; slots of superseded applications are never reused. Reviewer
-  sheets, decisions and awarded amounts are never touched.
+| it is | when it is in the export again |
+|---|---|
+| **new** | verified (and, for SABP, scored and batched) |
+| **unverified**, unchanged | left alone: it is not retried |
+| **unverified**, edited | **processed again**. This is how a correction is made: fix the row (same timestamp and email) |
+| **verified** (which includes everything after it: in review, reconciled, decided), unchanged | left alone, keeps its result |
+| **verified**, edited | **immutable**: not processed again; it becomes *invalid* and is held (below) |
+| **superseded** or **not considered** | left alone |
+
+`N new, M verified now, K changed since processed` is logged, and the same counts are in `sap_run.json` /
+`agm_run.json` as `new_submissions_this_run` and `processed_this_run`. Output
+files (`verified.csv`, the AGM lists, ...) are rebuilt from the whole export. `--reimport_uoft_data` verifies everything
+again against the new student data (except an edited verified row, which stays locked).
+
+**One binding application per student** (the same email; for SABP, per term): the newest *verified* one. A newer
+unverified submission never replaces a verified one: it is stored as `non_binding` and raised as a warning (someone may
+be using the student's details). With no verified application the newest one is used. Older submissions that lose are
+`superseded`.
+
+**Completed applications are final (SABP).** An application is complete once the committee's decision is recorded (the
+`decided` stage: it passed verification, the reviewers' need levels, the reconciliation and the decision, and is ready
+for disbursement, which this program does not track). Once a student has a complete application for a term, any other
+application of theirs for **that term**, new or still in progress, is `not_considered`: it is not verified, scored or
+batched, and is raised as a warning. Other terms are unaffected. (`COMPLETE_STAGE` in `sap.py` is the one place that
+says what complete means.)
+
+**Invalid applications are held, and need a person.** If a verified application's form row is edited after it was
+processed, the integrity check (`utsu_core/integrity.py`, separate from the processing above) marks it *invalid*
+(`invalid_reason`, flag `invalid`) and logs an `INTEGRITY` error on every run. It **stays in progress**: its status
+and stage do not change and it keeps its earlier result. But it goes no further: it is left out of the SABP review
+batches, the merge of reviewer ratings, the recording of decisions and of physical checks, the Senate `verified.csv`
+(and so the seating) and the AGM attendee lists. A person decides:
+
+- put the row back as it was: the hold is released by itself on the next run; or
+- the edit is fine: `python -m utsu_core.main --resolve_invalid <id>[,<id>...]` lifts the hold, and the next run takes
+  the edited row as the new baseline.
+
+The same check reports more than one verified application for one student (`duplicate_verified`). Every run writes
+`alerts_senate.csv`, `alerts_sap.csv` and `alerts_agm.csv` (header only when there is nothing) listing what a person has
+to look at: invalid applications (ERROR, until resolved), duplicates (ERROR), and this run's non-binding and
+not-considered applications (WARNING).
+
+For SABP, every application keeps its batch and record. New applications start a new batch once the last one is full
+or has been assigned to reviewers, and otherwise top it up; slots of superseded applications are never reused. Reviewer
+sheets, decisions and awarded amounts are never touched.
 
 A partial export (only the new responses) is not supported: its outputs would replace the earlier ones.
 
-**Handling a student's reply** to a "more information" email: either correct the row in the form export (same
-timestamp and email, so it keeps its ids) or add the corrected response as a new submission (the newest per email wins).
-The next run verifies it again.
+**Handling a student's reply** to a "more information" email: correct the student's row in the form export (same
+timestamp and email). An unverified application is then processed again. If it was already verified, the edit makes it
+invalid and held, which is what the alert is for.
 
 ## Identity and verification levels
 
-**IDs are internal database keys, not identities.** `student_uuid` is derived from the student's **email**, and an
-application's `uuid` from the program, its submission timestamp and the same email. When a row has no email the student
-number is used, and when it has neither the name, so the program still works with whatever the form collects. Case and
-spacing are ignored. Because the key is the email, editing a name or student number in a row does not change its ids;
-but a row that gains or loses an email (or changes it) gets new ids, so do not rely on them outside the database. The
-email is typed by the applicant and not checked, so someone could submit using another student's email and replace
-their application as "newest": check unexpected resubmissions.
+**IDs are internal database keys that say what they are.** Every id is written `<kind>:<uuid>`, for example
+`application:sap:9c1d...`, `student:email:3f2a...` or `roster:77b0...` (the rows of `uoft_data`), so its type travels with
+it (in SQLite, `uuid LIKE 'student:%'` selects a kind). Each kind has its own UUID namespace, so the same text hashed as
+two kinds never gives the same uuid. `student_uuid` is derived from the student's **email** (kind `student:email`); an
+application's `uuid` from its submission timestamp and the same email, per program (`application:senate|sap|agm`).
+When a row has no email the student number is used (`student:student_number`), and when it has neither the name
+(`student:name`), so the program still works with whatever the form collects, and the kind shows which one was used.
+Case, spacing and look-alike text are ignored (the text is made ASCII, see below). Because the key is the email, editing a name or student
+number in a row does not change its ids; but a row that gains, loses or changes its email gets new ids, so do not rely
+on them outside the database.
+
+The email is typed by the applicant and not checked, so someone could submit using another student's email. That cannot
+replace a verified application: a new submission with the student's email only becomes binding if it is itself verified.
+Someone who also knows the student's name and number would still pass; the warnings in the log are the way to notice.
 
 **Verification works with a name, a student number, or both.** Each application is matched against `uoft_data` using
 whatever it gives (a form may omit either column; at least one must exist):
@@ -82,8 +127,27 @@ newest N (0 keeps all), and `--no_backup` skips it for one run. Backups hold the
 **Spreadsheet safety.** Anything an applicant typed can start with `=`, `+`, `-` or `@`, which Excel and Google Sheets run
 as a formula. In every CSV this program writes, such a text cell gets a leading apostrophe (`'=HYPERLINK(...)`), so it
 shows as text; plain numbers are untouched. The program removes the apostrophe again when it reads its own files back.
-Student names and emails are no longer written to the log (the old `--log_sample` and `--dry_run` flags of
-`utsu_core.main` are gone).
+
+**ASCII only.** The program works in plain ASCII and does not support other scripts. Everything it compares or
+derives from a name, email or student number is made ASCII first (`clean_text` / `normalize_case` in
+`utsu_std/utils.py`): accents are removed (`José García` becomes `Jose Garcia`, so it matches a roster that has no
+accents, and the roster itself is stored this way), look-alike forms become the plain ones (fullwidth letters,
+ligatures, superscript digits, non-breaking spaces), curly apostrophes and every kind of dash are written the plain way
+(`O’Neil` matches `O'Neil`), runs of spaces collapse, and anything else that is not ASCII (other scripts, emoji,
+zero-width and control characters) is dropped. `ß` becomes `ss`, `Æ` becomes `AE`, `Ø` becomes `O`, and so on. So a
+name written only in another script has nothing left: it cannot be verified (the reason says so and the "more
+information" email asks for the name again), but it still gets its own ids, so two such students are never mistaken for
+one. Student numbers typed with fullwidth or superscript digits, or with a stray invisible character, give the same
+4 digits; nonsense numbers are simply not a match, never a crash. An email address with an invisible character is not
+valid for sending.
+
+Free text the applicant writes (for example the SABP general statement) is not changed, so reviewers read what was
+written; it is written to the output files as UTF-8. Files that people re-save from a spreadsheet are read whether they
+are UTF-8, UTF-16 or Excel's plain "CSV" (Windows-1252, with a warning); bytes that are not text become `\ufffd` instead
+of stopping the run.
+
+Student names and emails are not written to the log (the old `--log_sample` and `--dry_run` flags of `utsu_core.main`
+are gone).
 
 ## Testing mode
 
@@ -113,7 +177,7 @@ python -m utsu_core.main --program sap --sap_file path/to/export.csv [--batch_si
 ```
 
 (`--testing` supplies `testing/output/fake_sabp.csv`.) Column names come from `data/conversion_table_sap.csv`; columns not
-listed there are ignored. For each student (by email) only the newest application is kept, then it:
+listed there are ignored. For each student (by email) one application is binding (the newest verified one, see above), then it:
 
 - **verifies** against `uoft_data` by name, student number or both (a form may omit either column; see
   [Identity and verification levels](#identity-and-verification-levels)), and records one `student_aid` row per
@@ -163,10 +227,12 @@ never backwards by reprocessing:
 | `decided` | `--record_decisions decisions.csv` (columns `uuid`, `decision`, optional `awarded_amount`; other columns, such as those of `sap_merged_ratings.csv`, are ignored) |
 
 A batch that has left `scored` is closed: new applications start a new batch, and its blank sheets in `sap_batches/` are
-no longer rewritten. Rows that cannot be recorded (unknown or unverified application, missing decision, bad amount) are
-listed and skipped; a decision recorded before reconciliation is accepted with a warning (e.g. instant approvals).
-`sap_run.json` counts the verified applications per stage. Databases from before this column get it filled in on the
-next run (`decided` if there is a decision, `in_review` if the batch has reviewers, else `scored`).
+no longer rewritten. Rows that cannot be recorded (unknown or unverified application, an invalid one that is held, missing
+decision, bad amount) are listed and skipped; a decision recorded before reconciliation is accepted with a warning (e.g.
+instant approvals). `decided` is the last stage: the application is complete and ready for disbursement, which this
+program does not track (see "Completed applications are final" above). `sap_run.json` counts the verified applications
+per stage. Databases from before this column get it filled in on the next run (`decided` if there is a decision,
+`in_review` if the batch has reviewers, else `scored`).
 
 ```
 python -m utsu_core.main --program sap --issue_batches all          # sheets were handed out without --reviewers
@@ -183,7 +249,7 @@ python -m utsu_core.main --program agm --agm_file "path/to/RSVP.csv"
 ```
 
 (`--testing` supplies `testing/output/fake_agm.csv`; `python testing/generate_fake_data.py --only agm` regenerates it.) Columns come from
-`data/conversion_table_agm.csv`. Each person's newest RSVP (by email) is kept, then verified against `uoft_data`:
+`data/conversion_table_agm.csv`. For each person (by email) one RSVP is binding (the newest verified one, see above), verified against `uoft_data`:
 
 - the form may have **no student number**, so people are then matched on their ACORN-registered name alone
   (`name_only_match` flag, level 1). A name shared by several students stays unverified (`name shared by N students`)
@@ -191,11 +257,26 @@ python -m utsu_core.main --program agm --agm_file "path/to/RSVP.csv"
   A row with a student number and no name is matched on the number alone (`student_number_only_match`);
 - every RSVP gets an `agm_rsvp` row (uuid, `student_uuid`, `uoft_uuid`, `verification_level`, status, reason, flags; no
   names or emails);
-- `<output_dir>` gets **two attendee lists**, sorted by last name with a blank `checked_in` column for the door:
-  `agm_list_all.csv` (every verified attendee) and `agm_list_in_person.csv` (those whose Meeting Preference says
-  "in person"; anything else, including a blank answer, is left off), plus `agm_unverified.csv` (with the reason),
-  `agm_accommodations.csv` (dietary and accessibility needs of verified attendees, by uuid only, no names) and
-  `agm_run.json` (counts by meeting preference, match method and flag). The lists carry names and emails: keep them private.
+- `<output_dir>` gets these files (all but `agm_accommodations.csv` carry names and emails: keep them private):
+
+  | file | what is in it |
+  |---|---|
+  | `agm_list_all.csv` | the **door list**: every verified attendee, sorted by last name. Columns `last_name, first_name, preferred_name, pronouns, email, meeting_preference, contact_ok, flags, verification_level, checked_in`. No ids. `meeting_preference` is just **`In-person`** or **`Virtual`**: anything that is not clearly in person, including a blank answer, is Virtual. `checked_in` is blank for the door (a filled-in list works with `--record_physical`) |
+  | `agm_list_in_person.csv` | the same columns, only the people who are `In-person` |
+  | `agm_unverified.csv` | RSVPs that could not be verified, with the `reason`; keeps the ids (`uuid`, `student_uuid`) the "more information" emails use |
+  | `agm_accommodations.csv` | dietary and accessibility needs of verified attendees, by `uuid` only, no names (so a need cannot be traced to a person) |
+  | `alerts_agm.csv` | what a person has to look at: invalid (held), duplicate and non-binding RSVPs |
+  | `agm_run.json` | counts (below) |
+
+  An invalid (held) RSVP is left off the attendee lists and shows only in `alerts_agm.csv`. The `meeting_preference`
+  column in every AGM file uses the same two values; the database keeps the answer as it was given.
+
+  `agm_run.json` keys: `submissions_in_export` (rows read), `new_submissions_this_run` (not seen in an earlier run),
+  `processed_this_run` (verified in this run), `binding_rsvps` (one per person, which the lists are built from),
+  `verified_rsvps`, `verified_in_person`, `unverified_rsvps`, `attendance` (In-person / Virtual counts), `match_method`,
+  `unverified_reasons`, `dietary_requests`, `accessibility_requests`, `flags`, `non_binding`, `changed_after_processing`,
+  `held_invalid`, `integrity_duplicates` and `alerts`. `sap_run.json` uses the same names (`binding_applications`,
+  `verified_applications`, ...).
 
 **Verification on its own.** The verification lives in `utsu_core/agm_verify.py` and can be run without producing any
 lists or database rows, to check an RSVP export against a database that already holds `uoft_data`:
