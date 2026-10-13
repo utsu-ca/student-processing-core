@@ -13,10 +13,12 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from utsu_core.incremental import apply_known, known_rows, mark_superseded
 from utsu_core.senate import keep_newest, parse_submission_ts
 from utsu_core.verification import bulk_check_for_students, setup_reader
+from utsu_core.wfni import compute_wfni, current_weights
 from utsu_std.utils import absfile, generate_uuid, normalize_case
-from utsu_std.parsing_utils import get_trunc_id
+from utsu_std.parsing_utils import get_trunc_id, split_multi
 
 logger = logging.getLogger(__name__)
 
@@ -31,43 +33,7 @@ MASTER_FIELDS = ["uuid", "status", "student_uuid", "submission_ts", "terms", "id
 REVIEW_FIELDS = ["record_id", "uuid", "stream", "subsidies", "requested_amount", "wfni", "emergency",
                  "general_statement", "need_level", "notes"]
 
-# ---- WFNI weights (SAS-002 "Financial Need Index Weights") ---------------------------------------------------
-# Option text is normalized by _norm() before lookup, so spacing, case and "to" vs "-" do not matter.
-DISABILITY = {"yes": 2, "no": 0}
-HOUSING = {"stablyhoused": 0, "precariouslyhoused": 1, "imminentriskoflosinghousing": 4,
-           "emergencysheltered": 4, "unsheltered": 6}
-DISPOSABLE_INCOME = {"anegativeamount": 5, "lessthan$100": 4, "$100-200": 3, "$200-500": 2, "$500-1000": 0,
-                     "$1000+": -3}
-LIQUIDITY = {"$0-$500": 3, "$500-$1000": 1, "$1000-$2500": 0, "$2500-$5000": -1, "$5000-$7500": -2,
-             "$7500-$10,000": -3, "$10,000+": -5}
-DEPENDENTS = {"0": 0, "1": 1, "2": 2, "3": 3, "4+": 4}
-EXTERNAL_SUPPORTS = {"yes": 0, "no": 1}
-CIRCUMSTANCE_POINTS, CIRCUMSTANCE_CAP = 3, 10
-MAX_WFNI = 2 + 2 + 6 + 5 + 3 + CIRCUMSTANCE_CAP + 4 + 1
-# Policy: "trust but verify when point totals represent a majority of the point scale".
-HIGH_WFNI = MAX_WFNI // 2 + 1
-
-
-def _norm(value: str) -> str:
-    return re.sub(r"\s+", "", (value or "").lower().replace(" to ", "-"))
-
-
-def _points(table: dict[str, int], value: str) -> int | None:
-    """Points for an answer, or None when it is not a known option (the long 'negative amount' option matches by prefix)."""
-    key = _norm(value)
-    if key in table:
-        return table[key]
-    return next((p for k, p in table.items() if key.startswith(k)), None)
-
-
-def split_multi(value: str) -> list[str]:
-    """
-    Split a ';' separated multi-select answer.
-
-    >>> split_multi("A; B;;C ")
-    ['A', 'B', 'C']
-    """
-    return [part.strip() for part in (value or "").split(";") if part.strip()]
+# The WFNI answer weights live in data/wfni_weights.csv; see utsu_core/wfni.py.
 
 
 def parse_amount(value: str) -> float | None:
@@ -83,33 +49,6 @@ def parse_amount(value: str) -> float | None:
         return float(re.sub(r"[$,\s]", "", value or ""))
     except ValueError:
         return None
-
-
-def compute_wfni(app: dict[str, str]) -> tuple[int | None, list[str]]:
-    """
-    Weighted Financial Need Index from the questionnaire. Only the living-costs stream answers it, so other
-    applications get None. Returns (score, names of answers that were blank or not a known option).
-
-    >>> compute_wfni({"disability_mobility": "Yes", "disability_invisible": "No", "living_situation": "Stably Housed",
-    ...               "disposable_income": "Less than $100", "liquidity": "$0 to $500", "dependents": "1",
-    ...               "external_supports": "No", "circumstances": "Racial Violence;Recent estrangement"})
-    (17, [])
-    """
-    if not any(app.get(k) for k in ("living_situation", "disposable_income", "liquidity")):
-        return None, []
-    total, unknown = 0, []
-    for field, table in (("disability_mobility", DISABILITY), ("disability_invisible", DISABILITY),
-                         ("living_situation", HOUSING), ("disposable_income", DISPOSABLE_INCOME),
-                         ("liquidity", LIQUIDITY), ("dependents", DEPENDENTS),
-                         ("external_supports", EXTERNAL_SUPPORTS)):
-        points = _points(table, app.get(field, ""))
-        if points is None:
-            unknown.append(field)
-        else:
-            total += points
-    circumstances = [c for c in split_multi(app.get("circumstances", "")) if c.lower() not in ("n/a", "na", "none")]
-    total += min(CIRCUMSTANCE_CAP, CIRCUMSTANCE_POINTS * len(circumstances))
-    return total, unknown
 
 
 def redact(text: str, names: list[str] = ()) -> str:
@@ -149,7 +88,8 @@ def build_application(row: dict[str, str]) -> dict:
     app["faculty"] = app.get("faculty", "").split(" - ")[0].strip()
     app["uuid"] = sap_uuid(app)
 
-    wfni, unknown = compute_wfni(app)
+    weights = current_weights()
+    wfni, unknown = compute_wfni(app, weights)
     app["wfni"] = "" if wfni is None else wfni
     flags = []
     if app.get("member_confirmed", "").lower() != "yes":
@@ -166,7 +106,7 @@ def build_application(row: dict[str, str]) -> dict:
         flags.append("no_statement")
     if unknown:
         flags.append("wfni_incomplete")
-    if wfni is not None and wfni >= HIGH_WFNI:
+    if wfni is not None and wfni >= weights.high_threshold:
         flags.append("high_wfni")
     app["flags"] = ";".join(flags)
     return app
@@ -196,19 +136,41 @@ def _match_key(app: dict) -> tuple[str, int | str | None]:
     return app["full_name"], int(trunc) if str(trunc).isdigit() else trunc
 
 
-def assign_batches(verified: list[dict], batch_size: int = 50) -> list[list[dict]]:
+def assign_batches(verified: list[dict], batch_size: int = 50, placed: dict[str, tuple[int, int]] | None = None,
+                   closed=frozenset()) -> list[list[dict]]:
     """
-    Cut verified applications into batches of at most `batch_size`, oldest submission first so that batches
-    already handed out keep their contents as new applications arrive. Sets each application's batch and record.
+    Cut verified applications into batches of at most `batch_size`, oldest submission first. Sets each
+    application's batch and record.
+
+    Batches already handed out stay as they are when new applications arrive: `placed` maps uuid -> (batch, record)
+    for applications that already have a slot (a slot is never reused, even if its application was superseded),
+    and new applications go to the last batch only if it has room and is not in `closed` (batches assigned to
+    reviewers); otherwise they start a new batch.
     """
     if batch_size < 1:
         raise ValueError("batch_size must be at least 1")
+    placed = placed or {}
+    used: dict[int, int] = {}
+    for batch, record in placed.values():
+        used[batch] = max(used.get(batch, 0), record)
+    last = max(used, default=0)
+
     ordered = sorted(verified, key=lambda a: (parse_submission_ts(a.get("submission_ts", "")) or datetime.min,
                                               a["uuid"]))
-    batches = [ordered[i:i + batch_size] for i in range(0, len(ordered), batch_size)]
-    for number, batch in enumerate(batches, start=1):
-        for record, app in enumerate(batch, start=1):
-            app["batch"], app["record"] = number, record
+    for app in ordered:
+        if app["uuid"] in placed:
+            app["batch"], app["record"] = placed[app["uuid"]]
+            continue
+        if last == 0 or last in closed or used.get(last, 0) >= batch_size:
+            last += 1
+        used[last] = used.get(last, 0) + 1
+        app["batch"], app["record"] = last, used[last]
+
+    batches: list[list[dict]] = [[] for _ in range(max((a["batch"] for a in ordered), default=0))]
+    for app in ordered:
+        batches[app["batch"] - 1].append(app)
+    for batch in batches:
+        batch.sort(key=lambda a: a["record"])
     return batches
 
 
@@ -260,8 +222,96 @@ def parse_reviewers(value) -> list[str]:
     return list(dict.fromkeys(r for r in (reviewer_id(str(p)) for p in parts) if r))
 
 
+STAGES = ("scored", "in_review", "discuss", "reconciled", "decided")
+ISSUED = STAGES[1:]  # the stages after a batch has been handed to reviewers
+
+
 def ensure_schema(conn: sqlite3.Connection):
     conn.executescript(Path(absfile("src/schema/student_aid.sql")).read_text(encoding="utf-8"))
+    if "stage" not in {row[1] for row in conn.execute("PRAGMA table_info(student_aid)")}:
+        # a database from before stage tracking: work out where each application already is
+        conn.execute("ALTER TABLE student_aid ADD COLUMN stage TEXT")
+        conn.execute("""UPDATE student_aid SET stage = CASE
+                            WHEN decision IS NOT NULL THEN 'decided'
+                            WHEN batch IN (SELECT batch FROM sap_batch_reviewer) THEN 'in_review'
+                            WHEN status = 'verified' THEN 'scored' END""")
+        conn.commit()
+
+
+def mark_in_review(conn: sqlite3.Connection, batches) -> int:
+    """Move the scored applications of these batches to in_review (their sheets went to reviewers). Returns how many."""
+    batches = sorted(set(batches))
+    if not batches:
+        return 0
+    cursor = conn.execute("UPDATE student_aid SET stage = 'in_review' WHERE stage = 'scored' AND status = 'verified' "
+                          f"AND batch IN ({','.join('?' * len(batches))})", batches)
+    conn.commit()
+    return cursor.rowcount
+
+
+def issue_batches(conn: sqlite3.Connection, which: str) -> list[int]:
+    """
+    Record that batch sheets were handed to reviewers outside the program: `which` is 'all' (every batch not yet
+    issued) or batch numbers such as '1,2'. Those batches are then never added to or rewritten. Returns the
+    batches that were marked.
+    """
+    ensure_schema(conn)
+    pending = {b for (b,) in conn.execute("SELECT DISTINCT batch FROM student_aid WHERE stage = 'scored' "
+                                          "AND batch IS NOT NULL")}
+    if which.strip().lower() == "all":
+        wanted = pending
+    else:
+        try:
+            wanted = {int(part) for part in which.split(",") if part.strip()}
+        except ValueError:
+            raise ValueError(f"--issue_batches takes 'all' or batch numbers like 1,2 (got {which!r})")
+        for batch in sorted(wanted - pending):
+            logger.warning(f"Batch {batch} has nothing to issue (unknown, or already issued)")
+    issued = sorted(wanted & pending)
+    mark_in_review(conn, issued)
+    logger.info(f"Marked {len(issued)} batch(es) as handed to reviewers: {issued}")
+    return issued
+
+
+def record_decisions(conn: sqlite3.Connection, path: Path | str) -> dict:
+    """
+    Record final decisions from a CSV with `uuid`, `decision` and (optionally) `awarded_amount` columns; other
+    columns are ignored, so the sap_merged_ratings.csv can be filled in and used. Each application recorded
+    moves to the `decided` stage. Rows that cannot be recorded are reported in `problems`, not applied.
+    """
+    ensure_schema(conn)
+    recorded, problems = 0, []
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        missing = {"uuid", "decision"} - {(h or "").strip() for h in reader.fieldnames or []}
+        if missing:
+            raise ValueError(f"{path} needs the columns uuid and decision (missing: {', '.join(sorted(missing))})")
+        for line, raw in enumerate(reader, start=2):
+            row = {k.strip(): (v or "").strip() for k, v in raw.items() if k}
+            uuid, decision, amount_text = row["uuid"], row["decision"], row.get("awarded_amount", "")
+            if not uuid and not decision:
+                continue
+            found = conn.execute("SELECT status, stage FROM student_aid WHERE uuid = ?", (uuid,)).fetchone()
+            amount = parse_amount(amount_text) if amount_text else None
+            if not found:
+                problems.append(f"line {line}: unknown application {uuid!r}")
+            elif found[0] != "verified":
+                problems.append(f"line {line}: {uuid} is {found[0]}, not verified")
+            elif not decision:
+                problems.append(f"line {line}: {uuid} has no decision")
+            elif amount_text and (amount is None or amount < 0):
+                problems.append(f"line {line}: {uuid} has an invalid awarded_amount {amount_text!r}")
+            else:
+                if found[1] in (None, "scored", "in_review"):
+                    logger.warning(f"{uuid} was decided before its reviews were reconciled (stage {found[1]})")
+                conn.execute("UPDATE student_aid SET decision = ?, awarded_amount = ?, stage = 'decided' "
+                             "WHERE uuid = ?", (decision, amount, uuid))
+                recorded += 1
+    conn.commit()
+    for problem in problems:
+        logger.warning(problem)
+    logger.info(f"Recorded {recorded} decision(s); {len(problems)} row(s) skipped")
+    return {"recorded": recorded, "problems": problems}
 
 
 def assign_reviewers(conn: sqlite3.Connection, n_batches: int, reviewers: list[str]) -> dict[int, list[str]]:
@@ -311,17 +361,23 @@ def _sheet_uuids(path: Path) -> set[str]:
         return {row.get("uuid", "") for row in csv.DictReader(f)}
 
 
-def write_batches(batches: list[list[dict]], batch_dir: Path, assignments: dict[int, list[str]] | None = None):
+def write_batches(batches: list[list[dict]], batch_dir: Path, assignments: dict[int, list[str]] | None = None,
+                  closed=frozenset()):
     """
     Write blank batch_NNN.{csv,txt} per batch (replacing older ones) and, for assigned reviewers, a copy in
-    by_reviewer/<reviewer>/. A reviewer's existing sheet is never overwritten, since it may hold their ratings.
+    by_reviewer/<reviewer>/. Batches in `closed` were already handed to reviewers: their blank sheets are left
+    exactly as issued. A reviewer's existing sheet is never overwritten, since it may hold their ratings.
     """
     batch_dir.mkdir(parents=True, exist_ok=True)
     for old in (*batch_dir.glob("batch_*.csv"), *batch_dir.glob("batch_*.txt")):
-        old.unlink()
+        if int(old.stem.split("_")[1]) not in closed:
+            old.unlink()
     for number, batch in enumerate(batches, start=1):
+        if not batch:  # every application in it was superseded
+            continue
         rows = [review_row(a) for a in batch]
-        _write_sheet(rows, number, batch_dir)
+        if number not in closed:
+            _write_sheet(rows, number, batch_dir)
         for reviewer in (assignments or {}).get(number, []):
             folder = batch_dir / "by_reviewer" / reviewer
             existing = folder / f"batch_{number:03d}.csv"
@@ -397,6 +453,12 @@ def merge_reviews(conn: sqlite3.Connection, output_dir: Path | str = "secrets/ou
 
     conn.executemany("INSERT OR REPLACE INTO sap_review (uuid, reviewer, need_level, notes) VALUES (?, ?, ?, ?)",
                      [(u, r, level, note) for u, given in ratings.items() for r, (level, note) in given.items()])
+    # reviewed applications move on: agreed -> reconciled, far apart -> discuss, anything else stays in_review.
+    # Decided applications, and ones with no rating yet, are left alone.
+    stage_of = {"agreed": "reconciled", "discuss": "discuss"}
+    conn.executemany("UPDATE student_aid SET stage = ? WHERE uuid = ? "
+                     "AND stage IN ('scored', 'in_review', 'discuss', 'reconciled')",
+                     [(stage_of.get(r["status"], "in_review"), r["uuid"]) for r in rows if r["n_ratings"]])
     conn.commit()
 
     counts = {s: sum(r["status"] == s for r in rows) for s in ("agreed", "discuss", "incomplete", "unrated")}
@@ -407,13 +469,15 @@ def merge_reviews(conn: sqlite3.Connection, output_dir: Path | str = "secrets/ou
 
 
 _UPSERT = """
-INSERT INTO student_aid (uuid, student_uuid, student_number, submission_ts, terms, status, aid_type,
+INSERT INTO student_aid (uuid, student_uuid, student_number, submission_ts, terms, status, stage, aid_type,
                          requested_amount, wfni, emergency, flags, batch, record)
-VALUES (:uuid, :student_uuid, :id, :submission_ts, :terms, :status, :stream, :requested_amount, :wfni,
+VALUES (:uuid, :student_uuid, :id, :submission_ts, :terms, :status, :stage, :stream, :requested_amount, :wfni,
         :emergency, :flags, :batch, :record)
 ON CONFLICT(uuid) DO UPDATE SET student_uuid = excluded.student_uuid, status = excluded.status,
+    stage = COALESCE(student_aid.stage, excluded.stage),
     aid_type = excluded.aid_type, requested_amount = excluded.requested_amount, wfni = excluded.wfni,
-    emergency = excluded.emergency, flags = excluded.flags, batch = excluded.batch, record = excluded.record
+    emergency = excluded.emergency, flags = excluded.flags,
+    batch = COALESCE(excluded.batch, student_aid.batch), record = COALESCE(excluded.record, student_aid.record)
 """
 
 
@@ -422,6 +486,7 @@ def save_to_db(conn: sqlite3.Connection, applications: list[dict]):
     ensure_schema(conn)
     rows = [{**a, "requested_amount": float(a["requested_amount"]) if a["requested_amount"] != "" else None,
              "wfni": a["wfni"] if a["wfni"] != "" else None, "batch": a.get("batch"), "record": a.get("record"),
+             "stage": a.get("stage"),
              "student_uuid": a.get("student_uuid")} for a in applications]
     conn.executemany(_UPSERT, rows)
     conn.commit()
@@ -437,12 +502,15 @@ def write_master(applications: list[dict], path: Path):
 
 
 def process_sap(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path | str = "secrets/output",
-                batch_size: int = 50, reviewers=()) -> dict:
+                batch_size: int = 50, reviewers=(), reverify: bool = False) -> dict:
     """
     Process a SABP form export. Writes sap_verified.csv and sap_unverified.csv (private, with names and contact
     details) and sap_batches/batch_NNN.{csv,txt} (anonymized, for the committee) under output_dir, and records
     every application in the student_aid table. With `reviewers` (two or more names), each batch is also assigned
     to two of them and copied to sap_batches/by_reviewer/<name>/ for them to fill in; see merge_reviews.
+
+    Give the full export each time: applications already in student_aid keep their stored verification and
+    batch/record and are not processed again (unless `reverify`); only new ones are verified and added to batches.
     """
     reviewers = parse_reviewers(reviewers)
     csv_file = Path(csv_file)
@@ -451,26 +519,41 @@ def process_sap(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
 
     applications = read_applications(csv_file)
     current = keep_newest(applications)
+    ensure_schema(conn)
+    new = apply_known(current, known_rows(conn, "student_aid"), reverify)
     logger.info(f"{len(applications)} SABP applications read; {len(applications) - len(current)} older duplicate "
-                f"submissions dropped; {len(current)} to verify")
+                f"submissions dropped; {len(new)} new, {len(current) - len(new)} already processed")
 
-    matched = verify_applications(current, conn.cursor())
-    verified, unverified = [], []
-    for app in current:
-        student_uuid = matched.get(_match_key(app))
-        app["student_uuid"], app["status"] = student_uuid, "verified" if student_uuid else "unverified"
-        (verified if student_uuid else unverified).append(app)
-        if not student_uuid:
+    matched = verify_applications(new, conn.cursor())
+    for app in new:
+        app["student_uuid"] = matched.get(_match_key(app))
+        app["status"] = "verified" if app["student_uuid"] else "unverified"
+        if not app["student_uuid"]:
             logger.warning(f"UNVERIFIED SABP application {app['uuid']}")
+    verified = [a for a in current if a["status"] == "verified"]
+    unverified = [a for a in current if a["status"] == "unverified"]
+    for app in current:  # scored on arrival; an application already further along keeps its stage (see _UPSERT)
+        app["stage"] = "scored" if app["status"] == "verified" else None
 
-    batches = assign_batches(verified, batch_size)
+    placed = {u: (b, r) for u, b, r in conn.execute(
+        "SELECT uuid, batch, record FROM student_aid WHERE batch IS NOT NULL AND record IS NOT NULL")}
+    # batches already handed to reviewers: by assignment, or by stage (issued by hand, reviewed or decided)
+    closed = {b for (b,) in conn.execute(
+        "SELECT batch FROM sap_batch_reviewer UNION SELECT batch FROM student_aid WHERE batch IS NOT NULL "
+        f"AND stage IN ({','.join(repr(s) for s in ISSUED)})")}
+    batches = assign_batches(verified, batch_size, placed, closed)
     save_to_db(conn, current)
+    mark_superseded(conn, "student_aid", {a["uuid"] for a in applications} - {a["uuid"] for a in current})
     assignments = assign_reviewers(conn, len(batches), reviewers) if reviewers else {}
     write_master(verified, out / "sap_verified.csv")
     write_master(unverified, out / "sap_unverified.csv")
-    write_batches(batches, out / "sap_batches", assignments)
+    write_batches(batches, out / "sap_batches", assignments, closed)
+    mark_in_review(conn, assignments)  # newly assigned batches are now with reviewers
+    stages = {stage or "(none)": n for stage, n in conn.execute(
+        "SELECT stage, COUNT(*) FROM student_aid WHERE status = 'verified' GROUP BY stage ORDER BY stage")}
 
-    summary = {"applications": len(current), "verified": len(verified), "unverified": len(unverified),
+    summary = {"applications": len(current), "new": len(new), "verified": len(verified),
+               "unverified": len(unverified), "stages": stages, "wfni_weights_sha256": current_weights().sha256,
                "batches": len(batches), "batch_size": batch_size,
                "reviewers": {str(b): rs for b, rs in assignments.items()},
                "emergency": sum(a["emergency"] for a in verified),

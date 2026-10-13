@@ -5,6 +5,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from utsu_core.incremental import apply_known, known_rows, mark_superseded
 from utsu_core.verification import setup_reader, bulk_check_for_students
 from utsu_std.utils import absfile, generate_uuid, normalize_case
 from utsu_std.parsing_utils import get_trunc_id
@@ -87,11 +88,21 @@ def write_results(verified: list[dict[str, str]], unverified: list[dict[str, str
         logger.info(f"Wrote {len(rows)} rows to {output_dir / name}")
 
 
+_UPSERT = """
+INSERT INTO senate_application (uuid, student_uuid, status, submission_ts, delegated)
+VALUES (:uuid, :student_uuid, :status, :submission_ts, :delegated)
+ON CONFLICT(uuid) DO UPDATE SET student_uuid = excluded.student_uuid, status = excluded.status
+"""
+
+
 def verify_senators(csv_file: Path, cursor: sqlite3.Cursor, log_sample: bool = False,
-                    output_dir: Path | str = "secrets/output"):
+                    output_dir: Path | str = "secrets/output", reverify: bool = False):
     """
     Verify senate applications against uoft_data. Only the newest application per student is kept.
-    Writes verified.csv and unverified.csv to output_dir (relative paths resolve from the project root).
+    Applications already recorded in senate_application keep their stored outcome and are not verified again
+    (unless `reverify`), so only the new rows of an updated export are checked.
+    Writes verified.csv and unverified.csv (the whole export's result) to output_dir (relative paths resolve
+    from the project root).
     """
     if isinstance(csv_file, str):
         csv_file = Path(csv_file)
@@ -108,31 +119,37 @@ def verify_senators(csv_file: Path, cursor: sqlite3.Cursor, log_sample: bool = F
         applications.append(app)
 
     current = keep_newest(applications)
+    conn = cursor.connection
+    conn.executescript(Path(absfile("src/schema/senate.sql")).read_text(encoding="utf-8-sig"))
+    new = apply_known(current, known_rows(conn, "senate_application"), reverify)
     logger.info(f"{len(applications)} applications read; {len(applications) - len(current)} older "
-                f"duplicate submissions dropped; {len(current)} to verify")
+                f"duplicate submissions dropped; {len(new)} new, {len(current) - len(new)} already processed")
 
-    non_matched: set = set()
+    matched: dict = {}
     sample_pending = log_sample
-    for start in range(0, len(current), 50):
-        batch = current[start:start + 50]
+    for start in range(0, len(new), 50):
+        batch = new[start:start + 50]
         names = [normalize_case(a["full_name"]) for a in batch]
         trunc_ids = [get_trunc_id(a["id"]) if a["id"] else None for a in batch]
         results = bulk_check_for_students(names, trunc_ids, cursor, log_sample=sample_pending)
         sample_pending = False
-        non_matched.update(_match_key(n, t) for n, t in results["non_matches"])
+        matched.update({_match_key(row[4], row[1]): row[0] for row in results["matches"]})
 
-    verified, unverified = [], []
-    for app in current:
+    for app in new:
         trunc = get_trunc_id(app["id"]) if app["id"] else None
-        key = _match_key(normalize_case(app["full_name"]), trunc)
-        if key in non_matched:
-            unverified.append(app)
-            logger.warning(f"UNVERIFIED application {app['uuid']}")
-        else:
-            verified.append(app)
-            logger.info(f"VERIFIED application {app['uuid']}")
+        app["student_uuid"] = matched.get(_match_key(normalize_case(app["full_name"]), trunc))
+        app["status"] = "verified" if app["student_uuid"] else "unverified"
+        logger.log(logging.INFO if app["student_uuid"] else logging.WARNING,
+                   f"{app['status'].upper()} application {app['uuid']}")
 
+    conn.executemany(_UPSERT, new)
+    mark_superseded(conn, "senate_application",
+                    {a["uuid"] for a in applications} - {a["uuid"] for a in current})
+
+    verified = [a for a in current if a["status"] == "verified"]
+    unverified = [a for a in current if a["status"] == "unverified"]
     write_results(verified, unverified, Path(absfile(output_dir)))
-    return {"verified": verified, "unverified": unverified}
+    return {"verified": verified, "unverified": unverified, "new": len(new)}
+
 
 

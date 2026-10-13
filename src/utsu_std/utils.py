@@ -18,8 +18,6 @@ def setup_logging(args):
 
     verbosity = args['verbosity']
     log_file = args['log_file']
-    dry_run = args['dry_run']
-
 
     level = logging.WARNING
     if verbosity == 'INFO':
@@ -39,11 +37,6 @@ def setup_logging(args):
         log_path = absfile(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         handlers.append(logging.FileHandler(log_path, mode='a', encoding='utf-8'))
-    
-    if dry_run:
-        if verbosity < 3:
-            level = logging.DEBUG
-        format_string = "%(asctime)s [%(levelname)s] ==DRYRUN== %(message)s"
 
     logging.basicConfig(
         level=level,
@@ -136,11 +129,12 @@ def load_config_file(path: str) -> dict[any, any]: # type: ignore
         return {}
 
 
-def load_and_merge_config(args: Namespace, parser: ArgumentParser):
+def load_and_merge_config(args: Namespace, parser: ArgumentParser, transient: tuple[str, ...] = ()):
     """
     CLI flags override config values.
     Only replace a value if the CLI used something *not equal*
     to the defaultargparse value.
+    `transient` flags apply to this run only: they are taken from the CLI and never saved to the config file.
     """
     conf = load_config_file(args.config)
 
@@ -149,14 +143,16 @@ def load_and_merge_config(args: Namespace, parser: ArgumentParser):
         if key in ("config", "save_config", "testing"):
             continue
 
+        if key in transient:
+            conf[key] = value
         # CLI overrides config if explicitly provided
-        if value != parser.get_default(key):
+        elif value != parser.get_default(key):
             conf[key] = value
         else:
             # fallback to config value if exists, otherwise the default
             conf[key] = conf.get(key, value)
 
-    save_config_file(args.config, conf)
+    save_config_file(args.config, {k: v for k, v in conf.items() if k not in transient})
 
     return conf
 
@@ -223,6 +219,36 @@ def generate_uuid(base: str) -> str:
     """
     namespace = uuid.NAMESPACE_URL
     return str(uuid.uuid5(namespace, base))
+
+
+def identity_key(email: str = "", student_number: str = "", full_name: str = "") -> str:
+    """
+    What identifies a student across submissions: the email, or when the form gave none the student number,
+    or when it gave neither the name. Case and surrounding spaces are ignored.
+
+    >>> identity_key(" Ann@Mail.UToronto.ca ", "1001231617", "Ann Lee")
+    'ann@mail.utoronto.ca'
+    >>> identity_key("", "1001231617", "Ann Lee")
+    '1001231617'
+    >>> identity_key(full_name=" Ann  Lee")
+    'ann lee'
+    """
+    return (email.strip().lower() or student_number.strip().lower()
+            or " ".join(full_name.lower().split()))
+
+
+def student_uuid_for(email: str = "", student_number: str = "", full_name: str = "") -> str:
+    """
+    Internal per-student id, derived from `identity_key`. It is a database key, not an identity: it changes if a
+    student's identifying field does (e.g. a later submission that has an email when the first had none).
+    """
+    return generate_uuid("student|" + identity_key(email, student_number, full_name))
+
+
+def application_uuid_for(program: str, submission_ts: str, email: str = "", student_number: str = "",
+                         full_name: str = "") -> str:
+    """Internal per-application id: the program, the submission timestamp and the student's `identity_key`."""
+    return generate_uuid(f"{program}|{submission_ts.strip()}|{identity_key(email, student_number, full_name)}")
 
 
 def find_project_root(path: Path | str | None = None) -> Path:

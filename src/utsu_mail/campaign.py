@@ -13,7 +13,7 @@ from utsu_mail.transport import SmtpSender, SmtpSettings, build_message
 
 logger = logging.getLogger(__name__)
 
-LOG_FIELDS = ["timestamp", "to", "status", "error"]
+LOG_FIELDS = ["timestamp", "to", "status", "error", "application_uuid", "student_uuid"]
 CONFIRM_WORD = "send"
 
 
@@ -21,6 +21,8 @@ CONFIRM_WORD = "send"
 class Prepared:
     to: str
     rendered: RenderedMessage
+    application_uuid: str = ""
+    student_uuid: str = ""
 
 
 def prepare(template: Template, rows: list[dict[str, str]], email_field: str
@@ -32,7 +34,8 @@ def prepare(template: Template, rows: list[dict[str, str]], email_field: str
         if missing:
             skipped.append((row.get(email_field, "?"), f"blank/missing {', '.join(missing)}"))
         else:
-            ready.append(Prepared(row[email_field], template.render(row)))
+            ready.append(Prepared(row[email_field], template.render(row),
+                                  row.get("application_uuid", ""), row.get("student_uuid", "")))
     return ready, skipped
 
 
@@ -43,14 +46,15 @@ def already_sent(log_path: Path) -> set[str]:
         return {r["to"].lower() for r in csv.DictReader(f) if r.get("status") == "sent"}
 
 
-def append_log(log_path: Path, to: str, status: str, error: str = ""):
+def append_log(log_path: Path, to: str, status: str, error: str = "", application_uuid: str = "",
+               student_uuid: str = ""):
     log_path.parent.mkdir(parents=True, exist_ok=True)
     is_new = not log_path.is_file()
     with open(log_path, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         if is_new:
             writer.writerow(LOG_FIELDS)
-        writer.writerow([datetime.now().isoformat(timespec="seconds"), to, status, error])
+        writer.writerow([datetime.now().isoformat(timespec="seconds"), to, status, error, application_uuid, student_uuid])
 
 
 def format_preview(settings: SmtpSettings, item: Prepared, position: int, total: int) -> str:
@@ -116,11 +120,11 @@ def send_all(settings: SmtpSettings, ready: list[Prepared], log_path: Path,
                     sender.send(build_message(settings, item.to, item.rendered))
                 except (smtplib.SMTPException, OSError, ValueError) as e:
                     counts["failed"] += 1
-                    append_log(log_path, item.to, "failed", str(e))
+                    append_log(log_path, item.to, "failed", str(e), item.application_uuid, item.student_uuid)
                     logger.error(f"FAILED {item.to}: {e}")
                 else:
                     counts["sent"] += 1
-                    append_log(log_path, item.to, "sent")
+                    append_log(log_path, item.to,                     "sent", "", item.application_uuid, item.student_uuid)
                     logger.info(f"SENT {item.to} ({i + 1}/{len(ready)})")
                 if settings.delay and i < len(ready) - 1:
                     sleep(settings.delay)

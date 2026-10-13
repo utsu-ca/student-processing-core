@@ -1,0 +1,40 @@
+# SABP Weighted Financial Need Index (WFNI) weights (SAS-002 "Financial Need Index Weights").
+# One row per answer: field,answer,points. Edit and re-run; nothing else needs to change.
+#  - "answer" is matched ignoring case, spacing and "to" vs "-"; it must match the form's option text. The long
+#    "A negative amount (...)" option matches by its start. An answer not listed here counts as unknown and the
+#    application is flagged wfni_incomplete.
+#  - Every question below needs at least one row. The highest-scoring answers (plus the circumstances cap) set
+#    the maximum score, and the high_wfni flag is raised above half of it.
+#  - circumstances is a multi-select: "per_answer" points for each answer ticked (n/a and none excluded), up to "cap".
+field,answer,points
+disability_mobility,Yes,2
+disability_mobility,No,0
+disability_invisible,Yes,2
+disability_invisible,No,0
+living_situation,Stably Housed,0
+living_situation,Precariously Housed,1
+living_situation,Imminent risk of losing housing,4
+living_situation,Emergency sheltered,4
+living_situation,Unsheltered,6
+disposable_income,A negative amount,5
+disposable_income,Less than $100,4
+disposable_income,$100-200,3
+disposable_income,$200-500,2
+disposable_income,$500-1000,0
+disposable_income,$1000+,-3
+liquidity,$0 to $500,3
+liquidity,$500 to $1000,1
+liquidity,$1000 to $2500,0
+liquidity,$2500 to $5000,-1
+liquidity,$5000 to $7500,-2
+liquidity,"$7500 to $10,000",-3
+liquidity,"$10,000+",-5
+dependents,0,0
+dependents,1,1
+dependents,2,2
+dependents,3,3
+dependents,4+,4
+external_supports,Yes,0
+external_supports,No,1
+circumstances,per_answer,3
+circumstances,cap,10

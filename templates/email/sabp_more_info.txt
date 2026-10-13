@@ -1,0 +1,20 @@
+Subject: UTSU Student Aid Bursary Program: more information needed [Ref {{ application_uuid }}]
+
+Hi {{ full_name }},
+
+Thank you for applying to the UTSU Student Aid Bursary Program for {{ terms }}
+(submitted {{ submission_ts }}). We could not verify the following details against
+University of Toronto records:
+
+{{ unverified_fields }}
+
+Please reply to this email with the correct information, keeping the reference
+below in your reply. Your application cannot be reviewed until these details are
+verified.
+
+Reference
+  Application ID: {{ application_uuid }}
+  Student ID:     {{ student_uuid }}
+  Submitted:      {{ submission_ts }}
+
+UTSU Student Aid Bursary Program

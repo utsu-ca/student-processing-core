@@ -8,7 +8,7 @@ from pathlib import Path
 from utsu_core.importing_data import import_uoft_data, preprocess_uoft_csv
 from utsu_core.senate import verify_senators
 from utsu_core.agm import process_agm
-from utsu_core.sap import merge_reviews, process_sap
+from utsu_core.sap import issue_batches, merge_reviews, process_sap, record_decisions
 from utsu_core.seating import run_seating
 from utsu_core.verification import bulk_check_for_students
 from utsu_std.database import get_connection
@@ -26,12 +26,25 @@ def main(cfg):
         print(f"Merged SABP ratings: {result['counts']}")
         return
 
-    # check if uoft_data exists
+    if cfg.get('issue_batches'):
+        issued = issue_batches(db, cfg['issue_batches'])
+        print(f"Marked as handed to reviewers: batches {issued or 'none'}")
+        return
+
+    if cfg.get('record_decisions'):
+        result = record_decisions(db, cfg['record_decisions'])
+        print(f"Recorded {result['recorded']} decision(s); {len(result['problems'])} row(s) skipped")
+        for problem in result['problems']:
+            print(f"  {problem}")
+        return
+
+    # The student data is imported once: only when the table is missing, or on request with --reimport_uoft_data.
+    # Applications are never re-imported; each run verifies just the ones it has not seen before.
     cursor = db.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='uoft_data';")
     test = cursor.fetchone()
-    # if path for new data is provided, or no data is found
-    if cfg['import_uoft_data'] or not test:
+    reimport = bool(cfg.get('reimport_uoft_data'))
+    if reimport or not test:
         if not test:
             logger.info("Table 'uoft_data' does not exist in the database.")
         if not cfg['import_uoft_data']:
@@ -47,13 +60,17 @@ def main(cfg):
             else:
                 logger.error(f"File not found: {uoft_data_path}" )
                 quit()
+    else:
+        logger.info("Using the UofT student data already in the database (--reimport_uoft_data replaces it).")
 
+    # new student data can change earlier outcomes, so everything is verified again after a reimport
+    reverify = reimport
 
     # Implement the main functionality here
     program = cfg.get('program', 'all')
     if program in ('senate', 'all'):
         verify_senators(cfg['verify_student'], db.cursor(), log_sample=cfg.get('log_sample', False),
-                        output_dir=cfg.get('output_dir', 'secrets/output'))
+                        output_dir=cfg.get('output_dir', 'secrets/output'), reverify=reverify)
 
         seats_file = absfile(cfg.get('seats_file', 'data/seats_senate.csv'))
         if seats_file.exists():
@@ -65,13 +82,15 @@ def main(cfg):
     if program in ('sap', 'all'):
         if cfg.get('sap_file'):
             process_sap(cfg['sap_file'], db, output_dir=cfg.get('output_dir', 'secrets/output'),
-                        batch_size=cfg.get('batch_size', 50), reviewers=cfg.get('reviewers', ''))
+                        batch_size=cfg.get('batch_size', 50), reviewers=cfg.get('reviewers', ''),
+                        reverify=reverify)
         elif program == 'sap':
             raise ValueError("No SABP form export given; set --sap_file")
 
     if program in ('agm', 'all'):
         if cfg.get('agm_file'):
-            process_agm(cfg['agm_file'], db, output_dir=cfg.get('output_dir', 'secrets/output'))
+            process_agm(cfg['agm_file'], db, output_dir=cfg.get('output_dir', 'secrets/output'),
+                        reverify=reverify)
         elif program == 'agm':
             raise ValueError("No AGM RSVP export given; set --agm_file")
     pass
@@ -128,7 +147,10 @@ def run_verification_of_csv(csv_path: str, db_path: str):
 
 
 TESTING_DIR = "testing"
-PATH_KEYS = ("verify_student", "sap_file", "agm_file", "import_uoft_data", "db", "log_file", "output_dir", "seats_file")
+PATH_KEYS = ("verify_student", "sap_file", "agm_file", "import_uoft_data", "db", "log_file", "output_dir", "seats_file",
+             "record_decisions")
+# one-off actions that work on the last run's database: never rebuilt in testing mode, never saved to the config
+ACTION_FLAGS = ("merge_reviews", "issue_batches", "record_decisions")
 
 
 def resolve_paths(cfg: dict) -> dict:
@@ -171,7 +193,7 @@ def apply_testing_mode(args, parser) -> dict:
             cfg[key] = value
     resolve_paths(cfg)
     absfile(out).mkdir(parents=True, exist_ok=True)
-    if not cfg.get("merge_reviews"):  # merging reads the reviewer assignments saved by the last run
+    if not any(cfg.get(flag) for flag in ACTION_FLAGS):  # these read the database the last run left behind
         build_fake_data()
         Path(cfg["db"]).unlink(missing_ok=True)
     return cfg
@@ -183,7 +205,7 @@ def apply_testing_mode(args, parser) -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="")
-    parser.add_argument("--testing", default=True, action="store_true",
+    parser.add_argument("--testing", default=False, action="store_true",
                         help="Generate the fake data, run on it, and write everything to testing/output/")
     parser.add_argument("--verify_student", default="secrets/verify.csv",
                         help="Verify that the provided path to a CSV file matches the stored student data")
@@ -200,12 +222,21 @@ if __name__ == "__main__":
                         help="Comma separated committee members (two or more); each SABP batch is assigned to two")
     parser.add_argument("--merge_reviews", default=False, action="store_true",
                         help="Merge the completed reviewer sheets into sap_merged_ratings.csv instead of processing")
+    parser.add_argument("--issue_batches", default="",
+                        help="Record that SABP batch sheets were handed to reviewers outside the program: 'all' or "
+                             "batch numbers like 1,2. Those batches are then never changed or added to")
+    parser.add_argument("--record_decisions", default="",
+                        help="CSV with uuid, decision and awarded_amount columns: record the final SABP decisions")
     
     parser.add_argument("--db", default="secrets/db.sqlite",
                             help="Path to the database file containing student data")
 
     parser.add_argument("--import_uoft_data", default="secrets/uoft_data.csv",
-                        help="Path to the CSV file containing student data to be parsed")
+                        help="Path to the CSV file containing student data to be parsed (imported once, when the "
+                             "database has no uoft_data table)")
+    parser.add_argument("--reimport_uoft_data", default=False, action="store_true",
+                        help="Replace the stored student data with --import_uoft_data and verify every application "
+                             "again")
 
     parser.add_argument("--verbosity", default="TRACE",
                         help="Set the logging verbosity level")
@@ -227,7 +258,11 @@ if __name__ == "__main__":
                         help="Path to a JSON config file with settings (relative paths are from the project root)")
 
     args = parser.parse_args()
-    args = apply_testing_mode(args, parser) #if args.testing else load_and_merge_config(args, parser)
+    if args.testing:
+        args = apply_testing_mode(args, parser)
+    else:
+        # these flags are one-off actions: never saved to the config file
+        args = resolve_paths(load_and_merge_config(args, parser, transient=(*ACTION_FLAGS, "reimport_uoft_data")))
     setup_logging(args)
 
     main(args)

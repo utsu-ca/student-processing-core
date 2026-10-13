@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from utsu_core.agm_verify import is_yes, verify_rsvps
+from utsu_core.incremental import apply_known, known_rows, mark_superseded
 from utsu_core.senate import parse_submission_ts
 from utsu_core.verification import setup_reader
 from utsu_std.utils import absfile, generate_uuid, normalize_case
@@ -89,9 +90,13 @@ ON CONFLICT(uuid) DO UPDATE SET student_uuid = excluded.student_uuid, status = e
 """
 
 
+def ensure_schema(conn: sqlite3.Connection):
+    conn.executescript(Path(absfile("src/schema/agm.sql")).read_text(encoding="utf-8"))
+
+
 def save_to_db(conn: sqlite3.Connection, rsvps: list[dict]):
     """Add (or refresh) one agm_rsvp row per RSVP. No names or contact details are stored."""
-    conn.executescript(Path(absfile("src/schema/agm.sql")).read_text(encoding="utf-8"))
+    ensure_schema(conn)
     conn.executemany(_UPSERT, rsvps)
     conn.commit()
     logger.info(f"Saved {len(rsvps)} RSVP row(s) to agm_rsvp")
@@ -112,7 +117,8 @@ def _tally(values) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path | str = "secrets/output") -> dict:
+def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path | str = "secrets/output",
+                reverify: bool = False) -> dict:
     """
     Process an AGM voter RSVP export and write, under output_dir:
       agm_list_all.csv        every verified attendee
@@ -121,17 +127,25 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
       agm_accommodations.csv  dietary and accessibility needs of verified attendees, by uuid only (no names)
       agm_run.json            counts
     The lists carry names and emails and are private. Every RSVP is also recorded in the agm_rsvp table.
+
+    Give the full export each time: RSVPs already in agm_rsvp keep their stored outcome and are not verified
+    again (unless `reverify`); only the new ones are verified. The lists always cover the whole export.
     """
     out = Path(absfile(output_dir))
     out.mkdir(parents=True, exist_ok=True)
 
     rsvps = read_rsvps(Path(csv_file))
     current = keep_newest_rsvp(rsvps)
+    ensure_schema(conn)
+    new = apply_known(current, known_rows(conn, "agm_rsvp", ("match_method", "reason", "flags")), reverify)
     logger.info(f"{len(rsvps)} AGM RSVPs read; {len(rsvps) - len(current)} older duplicates dropped; "
-                f"{len(current)} to verify")
-    verified, unverified = verify_rsvps(current, conn.cursor())
+                f"{len(new)} new, {len(current) - len(new)} already processed")
+    verify_rsvps(new, conn.cursor())
+    verified = [r for r in current if r["status"] == "verified"]
+    unverified = [r for r in current if r["status"] == "unverified"]
 
     save_to_db(conn, current)
+    mark_superseded(conn, "agm_rsvp", {r["uuid"] for r in rsvps} - {r["uuid"] for r in current})
     everyone, in_person = attendee_list(verified), attendee_list(verified, in_person_only=True)
     write_csv(everyone, LIST_FIELDS, out / "agm_list_all.csv")
     write_csv(in_person, LIST_FIELDS, out / "agm_list_in_person.csv")
@@ -139,7 +153,7 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     write_csv([r for r in everyone if r.get("dietary") or r.get("accessibility")], ACCOMMODATION_FIELDS,
               out / "agm_accommodations.csv")
 
-    summary = {"rsvps": len(current), "verified": len(verified), "in_person": len(in_person),
+    summary = {"rsvps": len(current), "new": len(new), "verified": len(verified), "in_person": len(in_person),
                "unverified": len(unverified),
                "meeting_preference": _tally(r.get("meeting_preference") for r in verified),
                "match_method": _tally(r["match_method"] for r in verified),

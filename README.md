@@ -14,6 +14,25 @@ The editable install puts `utsu_core`, `utsu_std` and `utsu_mail` on the import 
 below works from any directory. Relative paths in flags and `config.json` (`data/`, `secrets/`, `testing/`,
 `templates/`) are always taken from the project root, never from the working directory.
 
+## Updating with new data
+
+The student data (`--import_uoft_data`) is a one-shot: it is imported only when the database has no `uoft_data` table.
+Pass `--reimport_uoft_data` to replace it (everything is then verified again). Without `--testing`, settings come from
+`config.json` (flags override it); `--merge_reviews` and `--reimport_uoft_data` are never saved there.
+
+The Senate, SABP and AGM form exports are meant to be re-run as they grow: give the **full export** each time. Every
+application has a deterministic `uuid`, recorded in `senate_application`, `student_aid` or `agm_rsvp`, so a run:
+
+- **verifies only the new rows** (`N new, M already processed` is logged and `new` is in `sap_run.json` /
+  `agm_run.json`); already-processed rows keep their stored result. Output files (`verified.csv`, the AGM lists, ...)
+  are rebuilt from the whole export;
+- marks an older submission `superseded` when the same student submits again (the newest is the one used);
+- for SABP, keeps every application's batch and record. New applications start a new batch once the last one is full
+  or has been assigned to reviewers, and otherwise top it up; slots of superseded applications are never reused. Reviewer
+  sheets, decisions and awarded amounts are never touched.
+
+A partial export (only the new responses) is not supported: its outputs would replace the earlier ones.
+
 ## Testing mode
 
 ```
@@ -47,8 +66,13 @@ listed there are ignored. For each student only the newest application is kept, 
 - **verifies** name + truncated student number against `uoft_data`, and records one `student_aid` row per application
   (deterministic `uuid`, matching `student_uuid`, stream, requested amount, WFNI, flags, batch/record). Reprocessing
   updates those rows but never overwrites `awarded_amount` or `decision`;
-- **scores** the Weighted Financial Need Index for living-costs applications from the policy weights, and adds review
-  flags (`membership_not_confirmed`, `amount_over_max`, `instant_approval_eligible`, `high_wfni`, `no_statement`, ...);
+- **scores** the Weighted Financial Need Index for living-costs applications from the weights in
+  `data/wfni_weights.csv` (`field,answer,points`; edit it and re-run, no code change), and adds review
+  flags (`membership_not_confirmed`, `amount_over_max`, `instant_approval_eligible`, `high_wfni`, `no_statement`, ...).
+  The file is re-read whenever it changes and its hash is saved in `sap_run.json`. Answers are matched to the form's own
+  option text (case, spacing and "to" vs "-" ignored); a reworded or mistyped option is not scored and flags the
+  application `wfni_incomplete`. The maximum score and the `high_wfni` threshold (over half the maximum) follow from the
+  weights. A re-run recomputes `wfni` for every application, but review sheets already handed out keep the old score;
 - **writes** to `<output_dir>`: `sap_verified.csv` / `sap_unverified.csv` (private: names, ID, email),
   `sap_run.json`, and `sap_batches/batch_NNN.csv` + `.txt`: anonymized batches of at most 50 applications, oldest
   first, with the general statement, requested amount, WFNI and blank `need_level` / `notes` columns for reviewers.
@@ -72,6 +96,30 @@ This writes `sap_merged_ratings.csv` (and the `sap_review` table): per applicati
 the spread, a `suggested_amount` (the mean of the rubric maximums, capped at the amount requested) and a `status`:
 `agreed`, `discuss` (levels differ by 2 or more), `incomplete` (one rating) or `unrated`. Invalid levels and unknown
 applications are logged as warnings.
+
+## SABP stages and decisions
+
+Every verified application has a `stage` in `student_aid` (empty for unverified ones), moved forward by the program and
+never backwards by reprocessing:
+
+| stage | set when |
+|---|---|
+| `scored` | verified against `uoft_data` and scored (WFNI, flags), in a batch not yet handed out |
+| `in_review` | its batch is handed to reviewers: `--reviewers` assigns it, or `--issue_batches all` (or `1,2`) records a hand-out |
+| `discuss` / `reconciled` | `--merge_reviews` finds the two levels 2 or more apart / in agreement (one rating stays `in_review`) |
+| `decided` | `--record_decisions decisions.csv` (columns `uuid`, `decision`, optional `awarded_amount`; other columns, such as those of `sap_merged_ratings.csv`, are ignored) |
+
+A batch that has left `scored` is closed: new applications start a new batch, and its blank sheets in `sap_batches/` are
+no longer rewritten. Rows that cannot be recorded (unknown or unverified application, missing decision, bad amount) are
+listed and skipped; a decision recorded before reconciliation is accepted with a warning (e.g. instant approvals).
+`sap_run.json` counts the verified applications per stage. Databases from before this column get it filled in on the
+next run (`decided` if there is a decision, `in_review` if the batch has reviewers, else `scored`).
+
+```
+python -m utsu_core.main --program sap --issue_batches all          # sheets were handed out without --reviewers
+python -m utsu_core.main --program sap --merge_reviews
+python -m utsu_core.main --program sap --record_decisions decisions.csv
+```
 
 ## AGM voter RSVPs
 
@@ -128,7 +176,25 @@ that has a missing field. Rows with a bad/duplicate address or a blank field a t
 `UTSU_SMTP_PASSWORD` or you will be prompted.
 
 **Safety:** a sample is shown first; type `send` to confirm (`t` mails the sample to the sender address only, `r` shows
-another sample). Every outcome is appended to `<output_dir>/mail_log_<template>.csv`, and addresses already sent are
+another sample). Every outcome is appended to `<output_dir>/mail_log_<template>.csv` (with the `application_uuid` and
+`student_uuid` when the recipient file has them), and addresses already sent are
 skipped on rerun unless `--resend` is given.
+
+**Rejections and requests for more information** (AGM, SABP, Senate): templates `agm_more_info`, `agm_rejection`,
+`sabp_more_info`, `sabp_rejection`, `senate_more_info` and `senate_rejection`. Every subject carries
+`[Ref <application uuid>]` and every body lists the application uuid, the student uuid and the submission timestamp.
+The application uuid is the `uuid` of the application row (derived from its submission timestamp); the student uuid is
+`uoft_data.uuid` when the student can be matched fully or partly (by student number or name), otherwise a stable uuid
+derived from the student number (the email for AGM). `notices` builds the recipient file, which also lists which
+details could not be verified (name, student number) for `more_info`:
+
+```
+python -m utsu_mail.notices senate more_info                          # reads <output_dir>/unverified.csv
+python -m utsu_mail.notices sabp more_info                            # reads <output_dir>/sap_unverified.csv
+python -m utsu_mail.notices agm rejection --reason "Not a UTSU member"  # reads <output_dir>/agm_unverified.csv
+python -m utsu_mail senate_more_info --recipients <output_dir>/notices_senate_more_info.csv
+```
+
+`--input` and `--output` override the files, and `--db` the database holding `uoft_data`.
 
 Tests: `python -m pytest` (the `pythonpath` and test folder are set in `pyproject.toml`).

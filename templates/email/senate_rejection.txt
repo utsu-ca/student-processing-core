@@ -1,0 +1,19 @@
+Subject: Your UTSU Senate application [Ref {{ application_uuid }}]
+
+Hi {{ full_name }},
+
+Thank you for applying to the UTSU Senate (division: {{ division }}, submitted
+{{ submission_ts }}). We are sorry to let you know that we are unable to accept
+your application.
+
+Reason: {{ rejection_reason }}
+
+If you believe this is a mistake, reply to this email with the reference below
+and we will review it.
+
+Reference
+  Application ID: {{ application_uuid }}
+  Student ID:     {{ student_uuid }}
+  Submitted:      {{ submission_ts }}
+
+UTSU Elections Team

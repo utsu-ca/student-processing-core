@@ -4,6 +4,16 @@ from pathlib import Path
 from utsu_std.utils import normalize_case
 
 
+def split_multi(value: str) -> list[str]:
+    """
+    Split a ';' separated multi-select answer.
+
+    >>> split_multi("A; B;;C ")
+    ['A', 'B', 'C']
+    """
+    return [part.strip() for part in (value or "").split(";") if part.strip()]
+
+
 def division_code(division: str) -> str:
     """
     The code in a form division such as 'TRIN - Trinity College'.
@@ -37,19 +47,28 @@ def get_uoft_trunc_format(student_number: str) -> str:
 
 
 def get_trunc_id(id_txt: str):
-    # sanity strip
-    id_txt.strip()
+    """
+    The 4 digits of a student number that the roster keeps, or None when the number cannot be read.
+
+    >>> get_trunc_id("1006639715"), get_trunc_id(" 1006639715 "), get_trunc_id("xxxxx3971x"), get_trunc_id("3971")
+    ('3971', '3971', '3971', '3971')
+    >>> get_trunc_id("") is None, get_trunc_id("12345") is None
+    (True, True)
+    """
+    id_txt = (id_txt or "").strip()
     if len(id_txt) == 4:
         # string is likely already in the correct format
         return id_txt
 
-    if id_txt[-1] == "x":
+    if id_txt[-1:] == "x":
         # str likely needs to be stripped
         return id_txt.strip("x")
 
     if len(id_txt) > 8:
         trunc = id_txt[-5:-1]
         return trunc
+
+    return None
 
 
 def strip_uoft_trunc_placeholders(csv_file: Path):

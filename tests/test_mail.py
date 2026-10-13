@@ -1,14 +1,17 @@
 import csv
 import random
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from utsu_mail import campaign, transport
 from utsu_mail.__main__ import main
-from utsu_mail.recipients import read_sql, split_by_validity
+from utsu_mail.notices import NAME_FIELD, NUMBER_FIELD, diagnose, main as notices_main
+from utsu_mail.recipients import read_csv as read_csv_rows, read_sql, split_by_validity
 from utsu_mail.schema import schema_fields
 from utsu_mail.templates import Template, TemplateError, load_template, parse_template
+from utsu_std.utils import generate_uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 SETTINGS = transport.SmtpSettings(host="localhost", from_addr="elections@utsu.ca", from_name="UTSU", security="none", delay=0)
@@ -39,6 +42,18 @@ def test_bundled_templates_only_use_schema_or_form_fields():
     allowed = {"full_name", "division", "id"}
     for name in ("senate_verified", "senate_unverified"):
         assert load_template(name, ROOT / "templates" / "email").fields <= allowed
+
+
+def test_notice_templates_are_tracked_and_use_known_fields():
+    tracking = {"application_uuid", "student_uuid", "submission_ts"}
+    extra = {"more_info": {"unverified_fields"}, "rejection": {"rejection_reason"}}
+    for program, own in (("senate", {"full_name", "division"}), ("sabp", {"full_name", "terms"}),
+                         ("agm", {"full_name"})):
+        for kind, kind_fields in extra.items():
+            t = load_template(f"{program}_{kind}", ROOT / "templates" / "email")
+            assert tracking <= t.fields and kind_fields <= t.fields
+            assert t.fields <= tracking | kind_fields | own
+            assert "{{ application_uuid }}" in t.subject
 
 
 def test_schema_fields_reads_sql_files():
@@ -121,3 +136,64 @@ def test_cli_dry_run_and_cancel(monkeypatch, tmp_path, capsys):
 
     # real send path with no smtp config refuses
     assert main(base) == 2
+
+
+def make_uoft_db(path):
+    conn = sqlite3.connect(path)
+    conn.executescript((ROOT / "src" / "schema" / "uoft_data.sql").read_text(encoding="utf-8-sig"))
+    conn.executemany(
+        "INSERT INTO uoft_data (uuid, trunc_id, first_name, last_name, full_name, division, faculty) "
+        "VALUES (?, ?, 'f', 'l', ?, 'UC', 'A&S')",
+        [("u-ada", 3971, "Ada Lovelace"), ("u-sam1", 1111, "Sam Lee"), ("u-sam2", 2222, "Sam Lee")])
+    conn.commit()
+    conn.close()
+
+
+def test_diagnose_names_the_unverified_fields(tmp_path):
+    make_uoft_db(tmp_path / "db.sqlite")
+    cur = sqlite3.connect(tmp_path / "db.sqlite").cursor()
+    derived = lambda key: generate_uuid("student|" + key)
+    ada = {"full_name": "Ada Lovelace", "id": "1006639715", "email": "ada@x.ca"}
+
+    assert diagnose(ada, cur) == ("u-ada", [])
+    assert diagnose({**ada, "id": "1000000009"}, cur) == ("u-ada", [NUMBER_FIELD])
+    assert diagnose({**ada, "full_name": "Adda Lovelace"}, cur) == ("u-ada", [NAME_FIELD])
+    assert diagnose({"full_name": "Zed Nobody", "id": "1009999999", "email": "z@x.ca"}, cur) == \
+        (derived("1009999999"), [NAME_FIELD, NUMBER_FIELD])
+    # the AGM form has no student number: only a shared name makes one necessary
+    assert diagnose({"full_name": "Sam Lee", "email": "s@x.ca"}, cur) == (derived("s@x.ca"), [NUMBER_FIELD])
+    assert diagnose({"full_name": "Nobody", "email": "N@x.ca"}, cur) == (derived("n@x.ca"), [NAME_FIELD])
+
+
+def test_notices_to_tracked_email(monkeypatch, tmp_path):
+    monkeypatch.setattr(transport.smtplib, "SMTP", FakeSMTP)
+    FakeSMTP.sent = []
+    make_uoft_db(tmp_path / "db.sqlite")
+    applications = tmp_path / "unverified.csv"
+    write_csv(applications, [
+        {"uuid": "app-1", "submission_ts": "2026/09/12 3:19:43 p.m. AST", "full_name": "Ada Lovelace",
+         "id": "1000000009", "email": "ada@x.ca", "division": "UC"},
+        {"uuid": "app-2", "submission_ts": "2026/09/13 1:00:00 p.m. AST", "full_name": "Ada Lovelace",
+         "id": "1006639715", "email": "ok@x.ca", "division": "UC"}])
+    out = tmp_path / "notices.csv"
+    base = ["senate", "more_info", "--input", str(applications), "--db", str(tmp_path / "db.sqlite"),
+            "--config", str(tmp_path / "none.json"), "--output", str(out)]
+    assert notices_main(base) == 0
+
+    rows = read_csv_rows(out)
+    assert [r["application_uuid"] for r in rows] == ["app-1"]  # app-2 is fully matched, so nothing to ask
+    assert rows[0]["student_uuid"] == "u-ada" and rows[0]["unverified_fields"] == NUMBER_FIELD
+
+    ready, skipped = campaign.prepare(load_template("senate_more_info", ROOT / "templates" / "email"), rows, "email")
+    assert not skipped and "[Ref app-1]" in ready[0].rendered.subject
+    assert "Student ID:     u-ada" in ready[0].rendered.text and NUMBER_FIELD in ready[0].rendered.text
+
+    log = tmp_path / "log.csv"
+    assert campaign.send_all(SETTINGS, ready, log)["sent"] == 1
+    logged = read_csv_rows(log)
+    assert (logged[0]["application_uuid"], logged[0]["student_uuid"]) == ("app-1", "u-ada")
+
+    # a rejection needs a reason
+    assert notices_main(["sabp", "rejection"] + base[2:]) == 2
+    assert notices_main(["senate", "rejection", "--reason", "Not eligible"] + base[2:]) == 0
+    assert {r["rejection_reason"] for r in read_csv_rows(out)} == {"Not eligible"}

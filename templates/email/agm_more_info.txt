@@ -1,0 +1,20 @@
+Subject: UTSU AGM RSVP: more information needed [Ref {{ application_uuid }}]
+
+Hi {{ full_name }},
+
+Thank you for your RSVP to the UTSU Annual General Meeting (submitted
+{{ submission_ts }}). We could not verify the following details against University
+of Toronto records:
+
+{{ unverified_fields }}
+
+Please reply to this email with the correct information, keeping the reference
+below in your reply. Until these details are verified we cannot confirm you as a
+voting member for the meeting.
+
+Reference
+  RSVP ID:    {{ application_uuid }}
+  Student ID: {{ student_uuid }}
+  Submitted:  {{ submission_ts }}
+
+UTSU AGM Team
