@@ -339,7 +339,7 @@ def test_senate_update_verifies_only_new_applications(tmp_path, monkeypatch):
     assert [a["full_name"] for a in r2["unverified"]] == ["Cy Doe"]
     assert len(list(csv.DictReader(open(out / "verified.csv", encoding="utf-8")))) == 2
     assert sorted(conn.execute("SELECT status, uoft_uuid, verification_level FROM senate_application").fetchall(),
-                  key=str) == [("unverified", None, None), ("verified", "u0", 2), ("verified", "u1", 2)]
+                  key=str) == [("unverified", None, None), ("verified", "u0", 3), ("verified", "u1", 3)]
 
     r3 = senate.verify_senators(senate_form(tmp_path / "3.csv", second), conn.cursor(), output_dir=out)
     assert r3["new"] == 0 and seen[-1] == [] and r3["changed"] == []

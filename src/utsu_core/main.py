@@ -7,7 +7,6 @@ from pathlib import Path
 
 from utsu_core.importing_data import import_uoft_data, preprocess_uoft_csv
 from utsu_core.integrity import resolve_invalid
-from utsu_core.physical import record_physical
 from utsu_core.senate import verify_senators
 from utsu_core.agm import process_agm
 from utsu_core.sap import issue_batches, merge_reviews, process_sap, record_decisions
@@ -18,6 +17,8 @@ from utsu_std.utils import absfile, normalize_case, setup_logging, load_and_merg
 from utsu_std.parsing_utils import get_trunc_id, normalize_name
 
 logger = logging.getLogger(__name__)
+
+PROGRAMS = ['senate', 'sabp', 'agm']
 
 def main(cfg):
     # keep a timestamped copy of the database from before this run changes it
@@ -51,16 +52,7 @@ def main(cfg):
               f"baseline" + (f". Not held or unknown: {sorted(set(ids) - set(resolved))}" if len(resolved) < len(ids) else ""))
         return
 
-    if cfg.get('record_physical'):
-        result = record_physical(db, cfg['record_physical'])
-        print(f"Recorded {result['recorded']} student(s) as checked in person "
-              f"({result['updated']} application row(s) raised to level 3); {len(result['problems'])} row(s) skipped")
-        for problem in result['problems']:
-            print(f"  {problem}")
-        return
-
     # The student data is imported once: only when the table is missing, or on request with --reimport_uoft_data.
-    # Applications are never re-imported; each run verifies just the ones it has not seen before.
     cursor = db.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='uoft_data';")
     test = cursor.fetchone()
@@ -117,61 +109,12 @@ def main(cfg):
     pass
 
 
-def run_verification_of_csv(csv_path: str, db_path: str):
-    # Implement the verification logic here
-
-    # read the CSV file containing student data
-
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-
-    with open(csv_path, newline='') as csvfile:
-        reader = csv.DictReader(csvfile)
-        # check header
-        expected_headers = {"Student Number", "First Name", "Last Name", "Email"}
-
-        # normalize the header names to a set for comparison
-        norm_expected_headers = {normalize_case(field) for field in expected_headers}
-        actual_headers = {normalize_case(field) for field in reader.fieldnames} # type: ignore
-
-        if not norm_expected_headers.issubset(actual_headers):
-            raise ValueError(f"CSV header does not match expected headers: {norm_expected_headers}, difference: {norm_expected_headers - actual_headers}")
-        
-        # batch processing of 50 students at a time
-        full_names = []
-        trunc_ids = []
-        for row in reader:
-            full_names.append(normalize_name(row['First Name'], row['Last Name']))
-            trunc_ids.append(get_trunc_id(row['Student ID']))
-
-            if len(full_names) == 50:
-                # Perform verification logic for each batch
-                
-                # query the database for exact matches
-                results = bulk_check_for_students(full_names, trunc_ids, cursor)
-
-                for row in results:
-                    print(row)
-                full_names = []
-                trunc_ids = []
-                quit(0)
-
-        # Process any remaining students in the last batch
-        if full_names:
-            for full_name, trunc_id in zip(full_names, trunc_ids):
-                results = bulk_check_for_students([full_name], [trunc_id], cursor)
-                for row in results:
-                    print(row)
-
-    pass
-
-
 
 TESTING_DIR = "testing"
 PATH_KEYS = ("verify_student", "sap_file", "agm_file", "import_uoft_data", "db", "log_file", "output_dir", "seats_file",
-             "record_decisions", "record_physical", "backup_dir")
+             "record_decisions", "backup_dir")
 # one-off actions that work on the last run's database: never rebuilt in testing mode, never saved to the config
-ACTION_FLAGS = ("merge_reviews", "issue_batches", "record_decisions", "record_physical", "resolve_invalid")
+ACTION_FLAGS = ("merge_reviews", "issue_batches", "record_decisions", "resolve_invalid")
 
 
 def resolve_paths(cfg: dict) -> dict:
@@ -251,9 +194,7 @@ if __name__ == "__main__":
     parser.add_argument("--resolve_invalid", default="",
                         help="Comma separated ids of invalid (held) applications that a person has looked at and "
                              "accepts: the hold is lifted and the next run takes their current form row as the baseline")
-    parser.add_argument("--record_physical", default="",
-                        help="CSV of students checked in person (email, student_number or full_name; optional "
-                             "checked_in column): raises their verified applications to verification level 3")
+
     
     parser.add_argument("--db", default="secrets/db.sqlite",
                             help="Path to the database file containing student data")

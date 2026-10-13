@@ -1,5 +1,9 @@
 # student-matching
 
+Full documentation (getting started, runbook, command-line reference, per-program guides, data model, architecture and
+a code review) is in the [`wiki/`](wiki/Home.md) folder, which is written to be published as the GitHub Wiki. This
+README is the detailed reference for how the processing behaves.
+
 ## Setup
 
 From the project root (any Python 3.12+; there are no runtime dependencies):

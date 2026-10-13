@@ -13,7 +13,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from utsu_core.agm_verify import is_yes, verify_rsvps
+from utsu_core.agm_verify import is_ambiguous, is_yes, verify_rsvps
 from utsu_core.incremental import (OUTCOME_SQL_TYPES, TRACKING_SQL_TYPES, add_missing_columns, apply_known,
                                    count_new, dedupe_by_uuid, fingerprint, known_rows, select_current, set_statuses)
 from utsu_core.integrity import (build_alerts, changed_after_processing, duplicate_verified, hold, record_invalid,
@@ -72,6 +72,7 @@ def build_rsvp(row: dict[str, str]) -> dict:
     rsvp = {k: (v or "").strip() for k, v in row.items() if isinstance(k, str)}
     rsvp["full_name"] = normalize_case(f"{rsvp.get('first_name', '')} {rsvp.get('last_name', '')}")
     rsvp["student_number"] = rsvp.get("Student Number", "")  # optional column, kept under its original header
+    rsvp["division"] = rsvp.get("Division", "")  # optional column too; it takes part in the match when given
     rsvp["contact_ok"] = "yes" if is_yes(rsvp.get("contact_consent", "")) else "no"
     rsvp["uuid"] = agm_uuid(rsvp)
     rsvp["student_uuid"] = student_uuid_for(rsvp.get("email", ""), rsvp["student_number"], rsvp["full_name"])
@@ -81,7 +82,7 @@ def build_rsvp(row: dict[str, str]) -> dict:
 def read_rsvps(csv_file: Path) -> list[dict]:
     mapping = absfile("data/conversion_table_agm.csv")
     reader = setup_reader(csv_file, mapping, optional=("first_name", "last_name"), identity=IDENTITY_COLUMNS)
-    fields = mapped_names(mapping) + ["Student Number"]
+    fields = mapped_names(mapping) + ["Student Number", "Division"]
     rsvps = []
     for row in reader:
         rsvp = build_rsvp(row)
@@ -110,8 +111,7 @@ INSERT INTO agm_rsvp (uuid, student_uuid, uoft_uuid, verification_level, status,
 VALUES (:uuid, :student_uuid, :uoft_uuid, :verification_level, :status, :reason, :match_method, :submission_ts,
         :meeting_preference, :contact_ok, :flags, :source_hash)
 ON CONFLICT(uuid) DO UPDATE SET student_uuid = excluded.student_uuid, uoft_uuid = excluded.uoft_uuid,
-    verification_level = CASE WHEN excluded.status = 'verified' AND agm_rsvp.verification_level = 3
-                              THEN 3 ELSE excluded.verification_level END,
+    verification_level = excluded.verification_level,
     status = excluded.status, reason = excluded.reason, match_method = excluded.match_method,
     source_hash = COALESCE(excluded.source_hash, agm_rsvp.source_hash),
     flags = excluded.flags
@@ -196,7 +196,9 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     write_csv(unverified, UNVERIFIED_FIELDS, out / "agm_unverified.csv")
     write_csv([r for r in everyone if r.get("dietary") or r.get("accessibility")], ACCOMMODATION_FIELDS,
               out / "agm_accommodations.csv")
-    alerts = build_alerts(conn, "agm_rsvp", "AGM", rsvps, statuses, duplicates)
+    # an RSVP that more than one student fits cannot be verified: raise it for a person, every run until resolved
+    ambiguous = [r for r in unverified if is_ambiguous(r.get("reason", ""))]
+    alerts = build_alerts(conn, "agm_rsvp", "AGM", rsvps, statuses, duplicates, ambiguous)
     write_alerts(out, "agm", alerts)
 
     summary = {"submissions_in_export": len(rsvps),
@@ -205,7 +207,8 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
                "binding_rsvps": len(current),
                "verified_rsvps": len(verified), "verified_in_person": len(in_person),
                "unverified_rsvps": len(unverified), "changed_after_processing": len(changed),
-               "held_invalid": len(held), "alerts": len(alerts), "integrity_duplicates": len(duplicates),
+               "held_invalid": len(held), "ambiguous_matches": len(ambiguous), "alerts": len(alerts),
+               "integrity_duplicates": len(duplicates),
                "non_binding": sum(s == "non_binding" for s in statuses.values()),
                "attendance": _tally(attendance(r.get("meeting_preference", "")) for r in verified),
                "match_method": _tally(r["match_method"] for r in verified),
@@ -216,7 +219,7 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     (out / "agm_run.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     logger.info(f"AGM: {len(verified)} verified ({len(in_person)} in person), {len(unverified)} unverified")
     return {"verified": verified, "in_person": in_person, "unverified": unverified, "held": held, "alerts": alerts,
-            "summary": summary}
+            "ambiguous": ambiguous, "summary": summary}
 
 
 if __name__ == "__main__":

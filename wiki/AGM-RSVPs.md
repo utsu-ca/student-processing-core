@@ -1,0 +1,90 @@
+# AGM RSVPs
+
+`src/utsu_core/agm.py` processes the AGM voter RSVP export; verification lives in `src/utsu_core/agm_verify.py`.
+
+```powershell
+python -m utsu_core.main --program agm --agm_file "secrets/RSVP.csv"
+```
+
+## Form export
+
+Columns are renamed through `data/conversion_table_agm.csv`:
+
+| Form column | Internal name | Notes |
+|---|---|---|
+| `Timestamp` | `submission_ts` | required |
+| `Username` | `personal_email` | required |
+| `Preferred Name`, `Preferred Pronouns` | `preferred_name`, `pronouns` | required |
+| `ACORN-registered First Name`, `...Last Name` | `first_name`, `last_name` | optional if there is a `Student Number` column |
+| `UofT Email Address` | `email` | required |
+| `Meeting Preference` | `meeting_preference` | required |
+| `Do you have any dietary restrictions or food allergies?` | `dietary` | required |
+| `Accessibility Requirements` | `accessibility` | required |
+| `Data Processing Confirmation` | `data_confirmation` | required |
+| `Contact Consent` | `contact_consent` | required |
+| `Student Number` | `student_number` | **optional extra column**; used automatically when present |
+
+At least one of the name columns or `Student Number` must exist.
+
+## Verification
+
+- With **no student number** column, people are matched on their ACORN-registered name alone (level 1, flag
+  `name_only_match`).
+- A name shared by several roster students stays unverified (`name shared by N students`, flag `ambiguous_name`) until
+  the form adds `Student Number`, which is then used (`name + student number`, level 2).
+- A row with a number and no name is matched on the number alone (level 1, flag `student_number_only_match`).
+
+### Flags
+
+| Flag | Meaning |
+|---|---|
+| `name_only_match` | matched on name alone |
+| `student_number_only_match` | matched on student number alone |
+| `ambiguous_name` | name shared by several students |
+| `no_data_confirmation` | the data-processing confirmation is not "yes..." |
+| `no_uoft_email` | no email given |
+| `changed_after_processing` | verified row edited after processing (held) |
+| `invalid` | held |
+
+## Outputs (in `--output_dir`)
+
+| File | Contents |
+|---|---|
+| `agm_list_all.csv` | **Door list**: every verified attendee, sorted by last name. Columns `last_name, first_name, preferred_name, pronouns, email, meeting_preference, contact_ok, flags, verification_level, checked_in`. No ids. `checked_in` is blank for the door. |
+| `agm_list_in_person.csv` | The same columns, only people attending `In-person`. |
+| `agm_unverified.csv` | RSVPs that could not be verified, with `reason`. Keeps `uuid` and `student_uuid` for the "more information" emails. |
+| `agm_accommodations.csv` | Dietary and accessibility needs of verified attendees, by `uuid` only, no names, so a need cannot be traced to a person. |
+| `alerts_agm.csv` | Invalid (held), duplicate and non-binding RSVPs. |
+| `agm_run.json` | Counts (below). |
+
+All but `agm_accommodations.csv` carry names and emails: keep them private.
+
+**`meeting_preference`** is written as just `In-person` or `Virtual`. In-person means the answer contains "in person" /
+"in-person" (case-insensitive); everything else, including a blank answer, is `Virtual`. The database keeps the answer as
+given. Be aware that a negated phrase such as "not in person" would also count as in-person (see
+[Code Review](Code-Review#low)); fixed options on the form avoid the problem.
+
+A held (invalid) RSVP is left off all attendee lists and appears only in `alerts_agm.csv`.
+
+### `agm_run.json`
+
+`submissions_in_export`, `new_submissions_this_run`, `processed_this_run`, `binding_rsvps`, `verified_rsvps`,
+`verified_in_person`, `unverified_rsvps`, `attendance` (In-person / Virtual counts), `match_method`,
+`unverified_reasons`, `dietary_requests`, `accessibility_requests`, `flags`, `non_binding`, `changed_after_processing`,
+`held_invalid`, `integrity_duplicates`, `alerts`. (`sap_run.json` uses the same names with `applications` instead of
+`rsvps`.)
+
+## Door check-in
+
+1. Print or open `agm_list_all.csv`; mark `checked_in` = `yes` for people who arrive.
+2. Record them: `python -m utsu_core.main --record_physical agm_list_all_filled.csv`. Their level-2 applications are
+   raised to level 3 (see [Identity and Verification](Identity-and-Verification#physical-verification)).
+
+## Verification on its own
+
+```powershell
+python -m utsu_core.agm_verify --agm_file "secrets/RSVP.csv" --db secrets/db.sqlite [--output_dir DIR]
+python -m utsu_core.agm_verify --testing
+```
+
+Writes `agm_verification.csv` (status, reason, match method, flags per person) and no lists or database rows.

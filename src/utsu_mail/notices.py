@@ -34,19 +34,22 @@ DEFAULT_INPUT = {"senate": "unverified.csv", "sabp": "sap_unverified.csv", "agm"
 KINDS = ("more_info", "rejection")
 NAME_FIELD = "- Full name (exactly as it appears on your ACORN registration)"
 NUMBER_FIELD = "- Student number"
+DIVISION_FIELD = "- Division (as it appears on your ACORN registration)"
 
 
 def diagnose(app: dict[str, str], cursor: sqlite3.Cursor) -> tuple[str, list[str]]:
     """
     Compare an application with uoft_data. Returns (student_uuid, details that could not be verified).
-    Works with whatever the application gave: a name, a student number or both. The name is blamed when it is
-    not in uoft_data, the student number when it does not belong to the name (or is not in uoft_data), and
-    the missing one of the two when a shared name or number cannot be decided alone.
+    Works with whatever the application gave: a name, a student number, a division, or several. The name is
+    blamed when it is not in uoft_data, the student number when it does not belong to the name (or is not in
+    uoft_data), the division when it does not match the student, and the missing one of name and number when a
+    shared name or number cannot be decided alone.
     """
     number = (app.get("id") or app.get("student_number") or "").strip()
     name = app.get("full_name", "")
+    division = app.get("division", "")
     student = student_uuid_for(app.get("email", ""), number, name)
-    match = match_students([{"full_name": name, "id": number}], cursor)[0]
+    match = match_students([{"full_name": name, "id": number, "division": division}], cursor)[0]
     if match.verified:
         return student, []
 
@@ -55,6 +58,8 @@ def diagnose(app: dict[str, str], cursor: sqlite3.Cursor) -> tuple[str, list[str
         fields = [NAME_FIELD]
         if number and match_students([{"id": number}], cursor)[0].reason == "student number not found":
             fields.append(NUMBER_FIELD)
+    elif reason == "division does not match":
+        fields = [DIVISION_FIELD]
     elif reason.startswith("student number shared") or reason.startswith("name has no plain letters"):
         fields = [NAME_FIELD]
     elif reason == "no name or student number given":

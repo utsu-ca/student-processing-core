@@ -3,8 +3,9 @@ PRAGMA foreign_keys = ON;
 -- One row per Student Aid Bursary Program application. `uuid` is the typed id `application:sap:<uuid>`, derived from
 -- the submission timestamp and the student's identity key (email; else student number; else name), so reprocessing
 -- the same form updates the same row. `student_uuid` is the typed per-student id; `uoft_uuid` is the matching
--- uoft_data.uuid (NULL when unverified); `verification_level` is 1 for a name or student number alone, 2 for both,
--- 3 once also checked in person. `status` is verified or unverified; later superseded or non_binding (see
+-- uoft_data.uuid (NULL when unverified); `verification_level` is the number of factors (name, student number,
+-- division) that matched: 1, 2 or 3 (the SABP form has no division, so at most 2). `status` is verified or
+-- unverified; later superseded or non_binding (see
 -- senate_application). `source_hash` fingerprints the form row as it was processed. `invalid_reason` is set when a
 -- verified application's row was edited after it was processed: it stays at its stage but is held (not batched,
 -- reconciled or decided) until a person deals with it; NULL means valid.

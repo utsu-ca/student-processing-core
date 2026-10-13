@@ -117,7 +117,7 @@ def test_a_name_typed_oddly_still_matches_the_roster(tmp_path):
          "jose@x.ca"),
         ("2026/10/01 9:05:00 a.m. AST", "Dar\u00edo O\u2019Neil\u2013Smith", "1000011119\u200b", "dario@x.ca")])
     r = run_senate(form, conn, tmp_path)
-    assert [a["verification_level"] for a in r["verified"]] == [2, 2] and r["unverified"] == []
+    assert [a["verification_level"] for a in r["verified"]] == [3, 3] and r["unverified"] == []
 
 
 def test_the_roster_is_imported_as_ascii(tmp_path):

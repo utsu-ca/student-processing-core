@@ -5,7 +5,7 @@ happen, hold the application for a person, and report it as an alert. Log lines 
 - a verified (or superseded) application is immutable, but its form row has changed since it was processed. The
   application is *invalid*: it keeps its status and stage (it stays in progress) and is noted as invalid
   (`invalid_reason`, flag `invalid`), but it is held: it is left out of anything further (review batches, the
-  reconciliation, decisions, physical verification, the Senate list that goes to seating, the AGM lists) until a
+  reconciliation, decisions, the Senate list that goes to seating, the AGM lists) until a
   person deals with it. If the row is put back as it was, the hold is released by itself; if the edit is fine,
   `--resolve_invalid <id>` accepts the edited row as the new baseline;
 - more than one verified application for the same student (and, for SABP, the same term).
@@ -110,11 +110,12 @@ def duplicate_verified(conn: sqlite3.Connection, table: str, program: str,
 
 
 def build_alerts(conn: sqlite3.Connection, table: str, program: str, rows: list[dict], statuses: dict[str, str],
-                 duplicates: list[tuple]) -> list[dict]:
+                 duplicates: list[tuple], ambiguous: list[dict] = ()) -> list[dict]:
     """
     What a person has to look at: held (invalid) applications, which stay listed until resolved; more than one
-    verified application per student; and, from this run, unverified submissions that did not replace a verified
-    one and applications not considered because the student already has a completed one.
+    verified application per student; ambiguous matches (more than one student fits an application, so it
+    cannot be verified; listed until it is resolved); and, from this run, unverified submissions that did not
+    replace a verified one and applications not considered because the student already has a completed one.
     """
     alerts = [{"severity": "ERROR", "kind": "invalid", "program": program, "uuid": uuid, "student_uuid": student,
                "detail": f"{reason}; held (in progress, not processed further) until resolved"}
@@ -124,6 +125,12 @@ def build_alerts(conn: sqlite3.Connection, table: str, program: str, rows: list[
     for *key, count in duplicates:
         alerts.append({"severity": "ERROR", "kind": "duplicate_verified", "program": program, "uuid": "",
                        "student_uuid": key[0], "detail": f"{count} verified applications ({', '.join(map(str, key))})"})
+    for row in ambiguous:
+        alerts.append({"severity": "WARNING", "kind": "ambiguous_match", "program": program, "uuid": row["uuid"],
+                       "student_uuid": row.get("student_uuid", ""),
+                       "detail": f"{row.get('reason', '')}: more than one student matches, so it cannot be verified; "
+                                 f"a person has to decide which student this is (or the row needs a student number "
+                                 f"or division)"})
     by_uuid = {row["uuid"]: row for row in rows}
     details = {"non_binding": "unverified submission; does not replace the student's verified application "
                               "(check it is not someone else using their details)",

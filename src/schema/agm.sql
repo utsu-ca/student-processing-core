@@ -4,7 +4,7 @@ PRAGMA foreign_keys = ON;
 --   uuid                typed id `application:agm:<uuid>` (submission timestamp + the student's identity key)
 --   student_uuid        typed id of the student, `student:email:...` (else student number, else name)
 --   uoft_uuid           the matching uoft_data.uuid once the student is verified, else NULL
---   verification_level  1 name or student number alone, 2 name + student number, 3 + checked in person
+--   verification_level  the number of factors (name, student number, division) that matched: 1, 2 or 3
 --   status              verified | unverified; later superseded or non_binding (see senate_application)
 --   source_hash         fingerprint of the form row as it was processed
 --   invalid_reason      set when a verified RSVP's row was edited after it was processed: held for a person

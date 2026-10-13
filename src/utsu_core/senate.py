@@ -96,8 +96,7 @@ VALUES (:uuid, :student_uuid, :uoft_uuid, :verification_level, :match_method, :s
 ON CONFLICT(uuid) DO UPDATE SET student_uuid = excluded.student_uuid, uoft_uuid = excluded.uoft_uuid,
     match_method = excluded.match_method, status = excluded.status,
     source_hash = COALESCE(excluded.source_hash, senate_application.source_hash),
-    verification_level = CASE WHEN excluded.status = 'verified' AND senate_application.verification_level = 3
-                              THEN 3 ELSE excluded.verification_level END
+    verification_level = excluded.verification_level
 """
 
 

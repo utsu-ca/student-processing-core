@@ -9,7 +9,6 @@ import pytest
 from test_agm import HEADERS as AGM_HEADERS, students_db
 from test_sap import AP_ROW, LC_ROW, form_csv as sap_form
 from utsu_core import agm, sap, senate, verification
-from utsu_core.physical import record_physical
 from utsu_mail import campaign
 from utsu_mail.recipients import read_csv
 from utsu_std.csv_safe import SafeDictWriter, read_cell, safe_cell
@@ -53,14 +52,56 @@ def run_senate(path, conn, tmp_path):
 
 def test_decide_uses_whatever_is_given():
     decide = verification.decide
-    assert decide("Ann Lee", "1001231617", [("u1", 3161)], [("u1", 3161)]).level == 2
-    assert decide("Ann Lee", "", [("u1", 3161)], []).level == 1
-    assert decide("", "1001231617", [], [("u1", 3161)]).method == "student number only"
+    ann = [("u1", 3161, "UC")]
+    assert decide("Ann Lee", "1001231617", "", ann, ann).level == 2
+    assert decide("Ann Lee", "", "", ann, []).level == 1
+    assert decide("", "1001231617", "", [], ann).method == "student number only"
     # a wrong number never falls back to the name
-    assert decide("Ann Lee", "1009999999", [("u1", 3161)], []).reason == "student number does not match"
-    assert decide("Ann Lee", "1009999999", [], []).reason == "name not found"
-    assert decide("Sam Lee", "", [("u1", 1), ("u2", 2)], []).reason.startswith("name shared by 2")
-    assert not decide("", "", [], []).verified
+    assert decide("Ann Lee", "1009999999", "", ann, []).reason == "student number does not match"
+    assert decide("Ann Lee", "1009999999", "", [], []).reason == "name not found"
+    assert decide("Sam Lee", "", "", [("u1", 1, "UC"), ("u2", 2, "UC")], []).reason.startswith("name shared by 2")
+    assert not decide("", "", "", [], []).verified
+
+
+def test_the_level_is_the_number_of_factors_that_matched():
+    decide = verification.decide
+    ann = [("u1", 3161, "UC")]
+    assert [decide("Ann Lee", "", "", ann, []).level, decide("", "1001231617", "", [], ann).level] == [1, 1]
+    # name < name + student number  OR  name + division < name + student number + division
+    two = [decide("Ann Lee", "1001231617", "", ann, ann), decide("Ann Lee", "", "UC", ann, []),
+           decide("", "1001231617", "UC", [], ann)]
+    assert [m.level for m in two] == [2, 2, 2]
+    assert [m.method for m in two] == ["name + student number", "name + division", "student number + division"]
+    three = decide("Ann Lee", "1001231617", "UC", ann, ann)
+    assert (three.level, three.method) == (3, "name + student number + division")
+
+
+def test_a_division_must_match_and_never_identifies_anyone_alone():
+    decide = verification.decide
+    ann = [("u1", 3161, "UC")]
+    assert decide("Ann Lee", "1001231617", "TRIN", ann, ann).reason == "division does not match"
+    assert decide("Ann Lee", "", "TRIN", ann, []).reason == "division does not match"
+    assert decide("", "1001231617", "TRIN", [], ann).reason == "division does not match"
+    assert decide("", "", "UC", [], []).reason == "no name or student number given"
+    # a student with no division on the roster never matches a division that was given
+    assert decide("Ann Lee", "", "UC", [("u1", 3161, "")], []).reason == "division does not match"
+    # a division tells two students with the same name apart
+    sams = [("u1", 1, "UC"), ("u2", 2, "TRIN")]
+    assert decide("Sam Lee", "", "", sams, []).reason.startswith("name shared by 2")
+    assert decide("Sam Lee", "", "TRIN", sams, []).uoft_uuid == "u2"
+    assert decide("Sam Lee", "", "NEW", sams, []).reason == "division does not match"
+    same = [("u1", 1, "UC"), ("u2", 2, "UC")]
+    assert decide("Sam Lee", "", "UC", same, []).reason == "name shared by 2 students in that division; a student number is needed"
+
+
+def test_match_students_reads_the_division_and_normalises_it():
+    conn = students_db(("Ann", "Lee", 3161))
+    people = [{"full_name": "Ann Lee", "division": "uc - University College"},
+              {"full_name": "Ann Lee", "id": "1001231617", "division": " UC "},
+              {"full_name": "Ann Lee", "division": "TRIN - Trinity College"}, {"full_name": "Ann Lee", "division": ""}]
+    got = verification.match_students(people, conn.cursor())
+    assert [(m.level, m.method) for m in got[:2]] == [(2, "name + division"), (3, "name + student number + division")]
+    assert got[2].reason == "division does not match" and (got[3].level, got[3].method) == (1, "name only")
 
 
 def test_match_students_with_names_only_and_numbers_only():
@@ -101,8 +142,9 @@ def test_senate_form_without_student_numbers_verifies_by_name(tmp_path):
                        with_id=False)
     r = run_senate(form, conn, tmp_path)
     assert [a["full_name"] for a in r["verified"]] == ["Ann Lee"]
+    # the form has the division too, which the roster confirms: name + division
     assert conn.execute("SELECT verification_level, match_method FROM senate_application "
-                        "WHERE status = 'verified'").fetchall() == [(1, "name only")]
+                        "WHERE status = 'verified'").fetchall() == [(2, "name + division")]
 
 
 def test_senate_form_without_names_verifies_by_student_number(tmp_path):
@@ -113,7 +155,7 @@ def test_senate_form_without_names_verifies_by_student_number(tmp_path):
     r = run_senate(form, conn, tmp_path)
     assert [a["id"] for a in r["verified"]] == ["1001231617"] and len(r["unverified"]) == 1
     assert conn.execute("SELECT verification_level, match_method FROM senate_application "
-                        "WHERE status = 'verified'").fetchall() == [(1, "student number only")]
+                        "WHERE status = 'verified'").fetchall() == [(2, "student number + division")]
 
 
 def test_a_form_with_neither_name_nor_number_is_refused(tmp_path):
@@ -184,16 +226,16 @@ def test_a_row_is_corrected_in_place_until_it_is_verified_and_then_it_is_locked(
     r2 = run_senate(fixed, conn, tmp_path)
     assert r2["unverified"] == [] and r2["changed"] == []
     assert (r2["verified"][0]["uuid"], r2["verified"][0]["student_uuid"]) == (uuid, student)
-    assert r2["verified"][0]["verification_level"] == 2
+    assert r2["verified"][0]["verification_level"] == 3
 
     # from then on it is immutable: editing it again makes it invalid and held, with an alert for a person
     broken = senate_file(tmp_path / "3.csv", [(ts, "Ann Lee", "1000000000", "ann@x.ca")])
     with caplog.at_level(logging.ERROR):
         r3 = run_senate(broken, conn, tmp_path)
     assert r3["changed"] == [uuid] and r3["verified"] == [] and [a["uuid"] for a in r3["held"]] == [uuid]
-    assert r3["held"][0]["verification_level"] == 2 and r3["held"][0]["invalid_reason"]
+    assert r3["held"][0]["verification_level"] == 3 and r3["held"][0]["invalid_reason"]
     assert [a["kind"] for a in r3["alerts"]] == ["invalid"]
-    assert conn.execute("SELECT status, verification_level FROM senate_application").fetchall() == [("verified", 2)]
+    assert conn.execute("SELECT status, verification_level FROM senate_application").fetchall() == [("verified", 3)]
     assert any(r.levelname == "ERROR" and "INTEGRITY" in r.getMessage() for r in caplog.records)
     # the alert repeats on every run until a person deals with it
     caplog.clear()
@@ -207,7 +249,7 @@ def test_a_resubmission_with_the_same_email_replaces_the_older_one_even_if_the_n
     form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "Ann Lee", "1000000000", "ann@x.ca"),
                                             ("2026/10/02 9:00:00 a.m. AST", "Ann Lee", "1001231617", "ann@x.ca")])
     r = run_senate(form, conn, tmp_path)
-    assert [a["verification_level"] for a in r["verified"]] == [2] and r["unverified"] == []
+    assert [a["verification_level"] for a in r["verified"]] == [3] and r["unverified"] == []
     assert sorted(s for (s,) in conn.execute("SELECT status FROM senate_application")) == ["superseded", "verified"]
 
 
@@ -267,33 +309,43 @@ def test_sap_and_agm_unverified_resubmissions_are_non_binding_too(tmp_path):
     assert a["summary"]["non_binding"] == 1
 
 
-# ---- physical verification (level 3) -----------------------------------------------------------------------
-
-def test_physical_check_raises_level_two_to_three_and_sticks(tmp_path):
-    conn = students_db(("Ann", "Lee", 3161), ("Bo", "Chan", 9111), ("Di", "Fox", 6000))
-    form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "Ann Lee", "1001231617", "ann@x.ca"),
-                                            ("2026/10/01 9:05:00 a.m. AST", "Bo Chan", "", "bo@x.ca"),
-                                            ("2026/10/01 9:10:00 a.m. AST", "Di Fox", "1000060009", "di@x.ca")])
-    run_senate(form, conn, tmp_path)
-    checked = write_rows(tmp_path / "door.csv", ["email", "checked_in"],
-                         [{"email": "ann@x.ca", "checked_in": "x"}, {"email": "bo@x.ca", "checked_in": "yes"},
-                          {"email": "di@x.ca", "checked_in": ""}, {"email": "ghost@x.ca", "checked_in": "x"}])
-    result = record_physical(conn, checked)
-    assert result["recorded"] == 1 and result["updated"] == 1 and len(result["problems"]) == 2
-    assert any("alone" in p for p in result["problems"]) and any("no verified" in p for p in result["problems"])
-    levels = dict(conn.execute("SELECT uoft_uuid, verification_level FROM senate_application"))
-    assert levels == {"u0": 3, "u1": 1, "u2": 2}
-
-    run_senate(form, conn, tmp_path)  # reprocessing never lowers it
-    assert dict(conn.execute("SELECT uoft_uuid, verification_level FROM senate_application"))["u0"] == 3
-
-
-def test_physical_check_finds_students_by_student_number_when_there_is_no_email(tmp_path):
+def test_a_division_that_does_not_match_the_roster_is_unverified_and_asks_for_the_division(tmp_path):
     conn = students_db(("Ann", "Lee", 3161))
-    run_senate(senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "Ann Lee", "1001231617", "")], ),
-               conn, tmp_path)
-    csv_path = write_rows(tmp_path / "p.csv", ["student_number"], [{"student_number": "1001231617"}])
-    assert record_physical(conn, csv_path)["recorded"] == 1
+    form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "Ann Lee", "1001231617", "ann@x.ca")])
+    # the roster has Ann in UC; the form (senate_file) says UC, so this verifies at level 3
+    assert [a["verification_level"] for a in run_senate(form, conn, tmp_path)["verified"]] == [3]
+    conn.execute("UPDATE uoft_data SET division = 'TRIN'")
+    other = senate_file(tmp_path / "s2.csv", [("2026/10/02 9:00:00 a.m. AST", "Ann Lee", "1001231617", "bob@x.ca")])
+    r = run_senate(other, conn, tmp_path / "other")
+    assert r["verified"] == [] and len(r["unverified"]) == 1
+    from utsu_mail.notices import DIVISION_FIELD, diagnose
+    assert diagnose(r["unverified"][0], conn.cursor())[1] == [DIVISION_FIELD]
+
+
+def test_a_student_with_no_college_belongs_to_their_faculty(tmp_path):
+    # the Senate form's division codes are colleges and faculties: a student with no division is in their faculty
+    conn = students_db(("Ann", "Lee", 3161))
+    conn.execute("UPDATE uoft_data SET division = '', faculty = 'PHM'")
+    ts = "2026/10/01 9:00:00 a.m. AST"
+    ok = senate_file(tmp_path / "ok.csv", [(ts, "Ann Lee", "1001231617", "ann@x.ca")])
+    text = ok.read_text(encoding="utf-8").replace(",UC,", ",PHM - Leslie Dan Faculty of Pharmacy,")
+    ok.write_text(text, encoding="utf-8")
+    r = run_senate(ok, conn, tmp_path / "a")
+    assert [(a["verification_level"], a["match_method"]) for a in r["verified"]] == [
+        (3, "name + student number + division")]
+    # a student with a college is in the college, not in their faculty
+    conn.execute("UPDATE uoft_data SET division = 'VIC', faculty = 'ARTSC'")
+    assert run_senate(senate_file(tmp_path / "b.csv", [("2026/10/05 9:00:00 a.m. AST", "Ann Lee", "1001231617",
+                                                        "ann2@x.ca")]), conn, tmp_path / "b")["verified"] == []
+
+
+def test_a_division_alone_identifies_nobody(tmp_path):
+    conn = students_db(("Ann", "Lee", 3161))
+    form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "", "", "a@x.ca")], with_name=False,
+                       with_id=False)
+    # the form has a division but neither a name nor a student number column
+    with pytest.raises(ValueError, match="identify people"):
+        run_senate(form, conn, tmp_path)
 
 
 # ---- databases from an older version -----------------------------------------------------------------------

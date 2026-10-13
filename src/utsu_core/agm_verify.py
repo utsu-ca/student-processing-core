@@ -36,6 +36,16 @@ def is_yes(value: str) -> bool:
     return (value or "").strip().lower().startswith("yes")
 
 
+def is_ambiguous(reason: str) -> bool:
+    """
+    Whether an unverified RSVP failed because more than one student matches it (a shared name or number).
+
+    >>> is_ambiguous("name shared by 2 students; a student number is needed"), is_ambiguous("name not found")
+    (True, False)
+    """
+    return "shared by" in (reason or "")
+
+
 def review_flags(rsvp: dict, match_method: str, reason: str) -> str:
     flags = []
     if match_method == METHOD_NAME:
@@ -44,6 +54,8 @@ def review_flags(rsvp: dict, match_method: str, reason: str) -> str:
         flags.append("student_number_only_match")
     if reason.startswith("name shared"):
         flags.append("ambiguous_name")
+    if reason.startswith("student number shared"):
+        flags.append("ambiguous_student_number")
     if not is_yes(rsvp.get("data_confirmation", "")):
         flags.append("no_data_confirmation")
     if not rsvp.get("email"):
@@ -64,6 +76,9 @@ def verify_rsvps(rsvps: list[dict], cursor: sqlite3.Cursor) -> tuple[list[dict],
         (verified if match.verified else unverified).append(rsvp)
         if not match.verified:
             logger.warning(f"UNVERIFIED AGM RSVP {rsvp['uuid']}: {match.reason}")
+            if is_ambiguous(match.reason):
+                logger.warning(f"AMBIGUOUS AGM RSVP {rsvp['uuid']}: more than one student matches ({match.reason}). "
+                               f"A person has to decide which student this is.")
     return verified, unverified
 
 
