@@ -80,10 +80,10 @@ def test_process_sap_verifies_batches_and_saves_rows(tmp_path):
     assert "Ann" not in review and "1001231617" not in review and "ann@" not in review and "416-555" not in review
     assert "B001-01" in review
 
-    db_rows = conn.execute("SELECT status, student_uuid, aid_type, batch FROM student_aid ORDER BY submission_ts"
-                           ).fetchall()
-    assert sorted(db_rows, key=str) == sorted([("verified", "u0", "LC", 1), ("verified", "u1", "AP", 2),
-                                               ("unverified", None, "LC", None)], key=str)
+    db_rows = conn.execute("SELECT status, uoft_uuid, verification_level, aid_type, batch FROM student_aid "
+                           "ORDER BY submission_ts").fetchall()
+    assert sorted(db_rows, key=str) == sorted([("verified", "u0", 2, "LC", 1), ("verified", "u1", 2, "AP", 2),
+                                               ("unverified", None, None, "LC", None)], key=str)
 
     conn.execute("UPDATE student_aid SET awarded_amount = 650, decision = 'approved' WHERE aid_type = 'LC' "
                  "AND status = 'verified'")

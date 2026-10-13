@@ -6,18 +6,23 @@ import sys
 from pathlib import Path
 
 from utsu_core.importing_data import import_uoft_data, preprocess_uoft_csv
+from utsu_core.physical import record_physical
 from utsu_core.senate import verify_senators
 from utsu_core.agm import process_agm
 from utsu_core.sap import issue_batches, merge_reviews, process_sap, record_decisions
 from utsu_core.seating import run_seating
 from utsu_core.verification import bulk_check_for_students
-from utsu_std.database import get_connection
+from utsu_std.database import backup_database, get_connection
 from utsu_std.utils import absfile, normalize_case, setup_logging, load_and_merge_config
 from utsu_std.parsing_utils import get_trunc_id, normalize_name
 
 logger = logging.getLogger(__name__)
 
 def main(cfg):
+    # keep a timestamped copy of the database from before this run changes it
+    if not cfg.get('no_backup'):
+        backup_database(cfg['db'], cfg.get('backup_dir') or None, int(cfg.get('keep_backups') or 0))
+
     # connect database
     db = get_connection(cfg['db'])
 
@@ -34,6 +39,14 @@ def main(cfg):
     if cfg.get('record_decisions'):
         result = record_decisions(db, cfg['record_decisions'])
         print(f"Recorded {result['recorded']} decision(s); {len(result['problems'])} row(s) skipped")
+        for problem in result['problems']:
+            print(f"  {problem}")
+        return
+
+    if cfg.get('record_physical'):
+        result = record_physical(db, cfg['record_physical'])
+        print(f"Recorded {result['recorded']} student(s) as checked in person "
+              f"({result['updated']} application row(s) raised to level 3); {len(result['problems'])} row(s) skipped")
         for problem in result['problems']:
             print(f"  {problem}")
         return
@@ -69,7 +82,7 @@ def main(cfg):
     # Implement the main functionality here
     program = cfg.get('program', 'all')
     if program in ('senate', 'all'):
-        verify_senators(cfg['verify_student'], db.cursor(), log_sample=cfg.get('log_sample', False),
+        verify_senators(cfg['verify_student'], db.cursor(),
                         output_dir=cfg.get('output_dir', 'secrets/output'), reverify=reverify)
 
         seats_file = absfile(cfg.get('seats_file', 'data/seats_senate.csv'))
@@ -148,9 +161,9 @@ def run_verification_of_csv(csv_path: str, db_path: str):
 
 TESTING_DIR = "testing"
 PATH_KEYS = ("verify_student", "sap_file", "agm_file", "import_uoft_data", "db", "log_file", "output_dir", "seats_file",
-             "record_decisions")
+             "record_decisions", "record_physical", "backup_dir")
 # one-off actions that work on the last run's database: never rebuilt in testing mode, never saved to the config
-ACTION_FLAGS = ("merge_reviews", "issue_batches", "record_decisions")
+ACTION_FLAGS = ("merge_reviews", "issue_batches", "record_decisions", "record_physical")
 
 
 def resolve_paths(cfg: dict) -> dict:
@@ -227,6 +240,9 @@ if __name__ == "__main__":
                              "batch numbers like 1,2. Those batches are then never changed or added to")
     parser.add_argument("--record_decisions", default="",
                         help="CSV with uuid, decision and awarded_amount columns: record the final SABP decisions")
+    parser.add_argument("--record_physical", default="",
+                        help="CSV of students checked in person (email, student_number or full_name; optional "
+                             "checked_in column): raises their verified applications to verification level 3")
     
     parser.add_argument("--db", default="secrets/db.sqlite",
                             help="Path to the database file containing student data")
@@ -248,12 +264,13 @@ if __name__ == "__main__":
                         help="Seed for tie-breaking in seat assignment; the same seed reproduces the same result")
     parser.add_argument("--output_dir", default="secrets/output",
                         help="Directory (relative to the project root) for verified.csv and unverified.csv")
-    parser.add_argument("--log_sample", default=True, action="store_true",
-                        help="Log 5 sample rows from uoft_data during verification")
-    parser.add_argument("--dry_run", default=False, action="store_true",
-                        help="Run the script in dry run mode without making any changes")
-        
-    
+    parser.add_argument("--backup_dir", default="",
+                        help="Where the timestamped database backups go (default: a backups folder next to the database)")
+    parser.add_argument("--keep_backups", default=0, type=int,
+                        help="Keep only this many of the newest backups (0 keeps them all)")
+    parser.add_argument("--no_backup", default=False, action="store_true",
+                        help="Skip the database backup that is made before every run")
+
     parser.add_argument("--config", default="config.json",
                         help="Path to a JSON config file with settings (relative paths are from the project root)")
 
@@ -262,7 +279,8 @@ if __name__ == "__main__":
         args = apply_testing_mode(args, parser)
     else:
         # these flags are one-off actions: never saved to the config file
-        args = resolve_paths(load_and_merge_config(args, parser, transient=(*ACTION_FLAGS, "reimport_uoft_data")))
+        args = resolve_paths(load_and_merge_config(
+            args, parser, transient=(*ACTION_FLAGS, "reimport_uoft_data", "no_backup")))
     setup_logging(args)
 
     main(args)

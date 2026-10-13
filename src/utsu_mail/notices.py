@@ -6,24 +6,27 @@ Build the recipient file for the "more information" and rejection emails.
     python -m utsu_mail.notices agm more_info --input path/to/agm_unverified.csv
 
 Each row keeps its original columns and gains:
-  application_uuid   the application's `uuid` (derived from its submission timestamp)
-  student_uuid       uoft_data.uuid when the student can be matched (fully or partly); otherwise a stable
-                     uuid derived from the student number (or the email when there is none)
+  application_uuid   the application's `uuid` (derived from its submission timestamp and the student's email)
+  student_uuid       the internal per-student id: derived from the student's email (else student number, else
+                     name), so it is the same before and after the student is verified
   unverified_fields  the details that could not be verified, one per line (more_info only)
   rejection_reason   the text given with --reason (rejection only)
+
+Both ids are internal database keys, shown in the emails only as a reference for replies; a reply is matched back
+to an application by the student's email, student number or name.
 
 Then send with:  python -m utsu_mail <program>_<kind> --recipients <the file written here>
 """
 import argparse
-import csv
 import logging
 import sqlite3
 import sys
 from pathlib import Path
 
+from utsu_core.verification import match_students
 from utsu_mail.recipients import read_csv
-from utsu_std.parsing_utils import get_trunc_id
-from utsu_std.utils import absfile, generate_uuid, load_config_file, normalize_case
+from utsu_std.csv_safe import SafeDictWriter
+from utsu_std.utils import absfile, load_config_file, student_uuid_for
 
 logger = logging.getLogger("utsu_mail.notices")
 
@@ -33,54 +36,32 @@ NAME_FIELD = "- Full name (exactly as it appears on your ACORN registration)"
 NUMBER_FIELD = "- Student number"
 
 
-def trunc_of(student_number: str) -> int | None:
-    """
-    >>> trunc_of("1006639715")
-    3971
-    >>> trunc_of("")  is None
-    True
-    >>> trunc_of("12") is None
-    True
-    """
-    try:
-        trunc = get_trunc_id(student_number) if student_number else None
-    except IndexError:
-        return None
-    return int(trunc) if trunc is not None and str(trunc).isdigit() else None
-
-
-def derived_student_uuid(app: dict[str, str]) -> str:
-    key = app.get("id", "").strip() or app.get("email", "").strip().lower()
-    return generate_uuid("student|" + key)
-
-
 def diagnose(app: dict[str, str], cursor: sqlite3.Cursor) -> tuple[str, list[str]]:
     """
     Compare an application with uoft_data. Returns (student_uuid, details that could not be verified).
-    The name is blamed when it is not in uoft_data; the student number when the name is known but no record
-    with that name has that number. A student number the form never asked for (AGM) is only requested when
-    a shared name makes it necessary.
+    Works with whatever the application gave: a name, a student number or both. The name is blamed when it is
+    not in uoft_data, the student number when it does not belong to the name (or is not in uoft_data), and
+    the missing one of the two when a shared name or number cannot be decided alone.
     """
-    number = app.get("id", "").strip()
-    trunc = trunc_of(number)
-    by_name = cursor.execute("SELECT uuid, trunc_id FROM uoft_data WHERE full_name = ?",
-                             (normalize_case(app.get("full_name", "")),)).fetchall()
+    number = (app.get("id") or app.get("student_number") or "").strip()
+    name = app.get("full_name", "")
+    student = student_uuid_for(app.get("email", ""), number, name)
+    match = match_students([{"full_name": name, "id": number}], cursor)[0]
+    if match.verified:
+        return student, []
 
-    full_match = [u for u, t in by_name if trunc is not None and t == trunc]
-    if full_match:
-        return full_match[0], []
-
-    if by_name:
-        fields = [NUMBER_FIELD]
-        candidates = [u for u, _ in by_name]
-    else:
+    reason = match.reason
+    if reason == "name not found":
         fields = [NAME_FIELD]
-        by_id = cursor.execute("SELECT uuid FROM uoft_data WHERE trunc_id = ?", (trunc,)).fetchall() \
-            if trunc is not None else []
-        candidates = [u for (u,) in by_id]
-        if number and not by_id:
+        if number and match_students([{"id": number}], cursor)[0].reason == "student number not found":
             fields.append(NUMBER_FIELD)
-    return (candidates[0] if len(candidates) == 1 else derived_student_uuid(app)), fields
+    elif reason.startswith("student number shared"):
+        fields = [NAME_FIELD]
+    elif reason == "no name or student number given":
+        fields = [NAME_FIELD, NUMBER_FIELD]
+    else:  # a student number that does not match, is not found, or a name shared by several students
+        fields = [NUMBER_FIELD]
+    return student, fields
 
 
 def build_notices(rows: list[dict[str, str]], cursor: sqlite3.Cursor, kind: str,
@@ -104,7 +85,7 @@ def write_notices(path: Path, notices: list[dict[str, str]]):
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(dict.fromkeys(k for n in notices for k in n))
     with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = SafeDictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(notices)
 

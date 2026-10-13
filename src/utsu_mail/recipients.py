@@ -3,6 +3,8 @@ import re
 import sqlite3
 from pathlib import Path
 
+from utsu_std.csv_safe import read_cell
+
 _EMAIL = re.compile(r"^[^@\s,;<>\"']+@[^@\s,;<>\"']+\.[^@\s,;<>\"']+$")
 
 
@@ -19,8 +21,9 @@ def valid_email(address: str) -> bool:
 
 
 def read_csv(path: Path) -> list[dict[str, str]]:
+    """Read a recipient CSV; cells that this program made spreadsheet-safe (see utsu_std.csv_safe) are restored."""
     with open(path, newline="", encoding="utf-8-sig") as f:
-        return [{k: (v or "").strip() for k, v in row.items() if k} for row in csv.DictReader(f)]
+        return [{k: read_cell((v or "").strip()) for k, v in row.items() if k} for row in csv.DictReader(f)]
 
 
 def read_sql(db_path: Path, query: str) -> list[dict[str, str]]:

@@ -1,8 +1,10 @@
 PRAGMA foreign_keys = ON;
 
--- One row per Student Aid Bursary Program application. `uuid` is derived from the submission, so reprocessing the
--- same form updates the same row. `student_uuid` is the matching uoft_data.uuid (NULL when unverified). The
--- decision columns are filled in later by the committee and are never overwritten by reprocessing.
+-- One row per Student Aid Bursary Program application. `uuid` is derived from the submission timestamp and the
+-- student's identity key (email; else student number; else name), so reprocessing the same form updates the same
+-- row. `student_uuid` is the internal per-student id; `uoft_uuid` is the matching uoft_data.uuid (NULL when
+-- unverified); `verification_level` is 1 for a name or student number alone, 2 for both, 3 once also checked in
+-- person. The decision columns are filled in later by the committee and are never overwritten by reprocessing.
 -- `stage` tracks a verified application through the process and is never moved backwards by reprocessing:
 --   scored      verified and scored, in a batch that has not been handed to reviewers
 --   in_review   its batch was handed to reviewers (assigned, or marked with --issue_batches)
@@ -13,6 +15,9 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE IF NOT EXISTS student_aid (
     uuid TEXT PRIMARY KEY,
     student_uuid TEXT,
+    uoft_uuid TEXT,
+    verification_level INTEGER,
+    match_method TEXT,
     student_number TEXT NOT NULL,
     submission_ts TEXT,
     terms TEXT,

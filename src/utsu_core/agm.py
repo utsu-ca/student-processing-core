@@ -14,28 +14,33 @@ from datetime import datetime
 from pathlib import Path
 
 from utsu_core.agm_verify import is_yes, verify_rsvps
-from utsu_core.incremental import apply_known, known_rows, mark_superseded
+from utsu_core.incremental import (OUTCOME_SQL_TYPES, add_missing_columns, apply_known, count_new, known_rows,
+                                   mark_superseded)
 from utsu_core.senate import parse_submission_ts
 from utsu_core.verification import setup_reader
-from utsu_std.utils import absfile, generate_uuid, normalize_case
+from utsu_std.csv_safe import SafeDictWriter
+from utsu_std.utils import absfile, application_uuid_for, identity_key, normalize_case, student_uuid_for
 
 logger = logging.getLogger(__name__)
 
 LIST_FIELDS = ["last_name", "first_name", "preferred_name", "pronouns", "email", "meeting_preference", "contact_ok",
-               "flags", "uuid", "checked_in"]
-UNVERIFIED_FIELDS = ["uuid", "reason", "submission_ts", "full_name", "email", "personal_email",
-                     "meeting_preference", "flags"]
+               "flags", "uuid", "student_uuid", "verification_level", "checked_in"]
+UNVERIFIED_FIELDS = ["uuid", "student_uuid", "reason", "submission_ts", "full_name", "student_number", "email",
+                     "personal_email", "meeting_preference", "flags"]
 ACCOMMODATION_FIELDS = ["uuid", "meeting_preference", "dietary", "accessibility"]
+# the form needs at least one of these; an RSVP may give a name, a student number ("Student Number" column) or both
+IDENTITY_COLUMNS = ("first_name", "last_name", "Student Number")
 
 
 def agm_uuid(rsvp: dict[str, str]) -> str:
-    """Deterministic id for an RSVP, so reprocessing the same form yields the same uuid."""
-    return generate_uuid("agm|" + "|".join(rsvp.get(k, "").strip() for k in ("submission_ts", "full_name", "email")))
+    """Internal id for an RSVP, so reprocessing the same form yields the same uuid."""
+    return application_uuid_for("agm", rsvp.get("submission_ts", ""), rsvp.get("email", ""),
+                                rsvp.get("student_number", ""), rsvp.get("full_name", ""))
 
 
 def person_key(rsvp: dict[str, str]) -> str:
-    """Who an RSVP belongs to: student number, else UofT email, else name."""
-    return rsvp.get("student_number") or rsvp.get("email", "").lower() or rsvp["full_name"].lower()
+    """Who an RSVP belongs to: their email, else student number, else name."""
+    return identity_key(rsvp.get("email", ""), rsvp.get("student_number", ""), rsvp.get("full_name", ""))
 
 
 def is_in_person(meeting_preference: str) -> bool:
@@ -54,11 +59,13 @@ def build_rsvp(row: dict[str, str]) -> dict:
     rsvp["student_number"] = rsvp.get("Student Number", "")  # optional column, kept under its original header
     rsvp["contact_ok"] = "yes" if is_yes(rsvp.get("contact_consent", "")) else "no"
     rsvp["uuid"] = agm_uuid(rsvp)
+    rsvp["student_uuid"] = student_uuid_for(rsvp.get("email", ""), rsvp["student_number"], rsvp["full_name"])
     return rsvp
 
 
 def read_rsvps(csv_file: Path) -> list[dict]:
-    reader = setup_reader(csv_file, absfile("data/conversion_table_agm.csv"))
+    reader = setup_reader(csv_file, absfile("data/conversion_table_agm.csv"), optional=("first_name", "last_name"),
+                          identity=IDENTITY_COLUMNS)
     rsvps = [build_rsvp(row) for row in reader]
     return [r for r in rsvps if r["full_name"] or r["student_number"]]
 
@@ -81,17 +88,21 @@ def attendee_list(verified: list[dict], in_person_only: bool = False) -> list[di
 
 
 _UPSERT = """
-INSERT INTO agm_rsvp (uuid, student_uuid, status, reason, match_method, submission_ts, meeting_preference,
-                      contact_ok, flags)
-VALUES (:uuid, :student_uuid, :status, :reason, :match_method, :submission_ts, :meeting_preference, :contact_ok,
-        :flags)
-ON CONFLICT(uuid) DO UPDATE SET student_uuid = excluded.student_uuid, status = excluded.status,
-    reason = excluded.reason, match_method = excluded.match_method, flags = excluded.flags
+INSERT INTO agm_rsvp (uuid, student_uuid, uoft_uuid, verification_level, status, reason, match_method,
+                      submission_ts, meeting_preference, contact_ok, flags)
+VALUES (:uuid, :student_uuid, :uoft_uuid, :verification_level, :status, :reason, :match_method, :submission_ts,
+        :meeting_preference, :contact_ok, :flags)
+ON CONFLICT(uuid) DO UPDATE SET student_uuid = excluded.student_uuid, uoft_uuid = excluded.uoft_uuid,
+    verification_level = CASE WHEN excluded.status = 'verified' AND agm_rsvp.verification_level = 3
+                              THEN 3 ELSE excluded.verification_level END,
+    status = excluded.status, reason = excluded.reason, match_method = excluded.match_method,
+    flags = excluded.flags
 """
 
 
 def ensure_schema(conn: sqlite3.Connection):
     conn.executescript(Path(absfile("src/schema/agm.sql")).read_text(encoding="utf-8"))
+    add_missing_columns(conn, "agm_rsvp", {"student_uuid": "TEXT", **OUTCOME_SQL_TYPES})
 
 
 def save_to_db(conn: sqlite3.Connection, rsvps: list[dict]):
@@ -104,7 +115,7 @@ def save_to_db(conn: sqlite3.Connection, rsvps: list[dict]):
 
 def write_csv(rows: list[dict], fields: list[str], path: Path):
     with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        writer = SafeDictWriter(f, fieldnames=fields, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
     logger.info(f"Wrote {len(rows)} rows to {path}")
@@ -137,10 +148,12 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     rsvps = read_rsvps(Path(csv_file))
     current = keep_newest_rsvp(rsvps)
     ensure_schema(conn)
-    new = apply_known(current, known_rows(conn, "agm_rsvp", ("match_method", "reason", "flags")), reverify)
+    known = known_rows(conn, "agm_rsvp", ("reason", "flags"))
+    to_check = apply_known(current, known, reverify)
     logger.info(f"{len(rsvps)} AGM RSVPs read; {len(rsvps) - len(current)} older duplicates dropped; "
-                f"{len(new)} new, {len(current) - len(new)} already processed")
-    verify_rsvps(new, conn.cursor())
+                f"{count_new(current, known)} new, {len(to_check)} to verify, "
+                f"{len(current) - len(to_check)} already verified")
+    verify_rsvps(to_check, conn.cursor())
     verified = [r for r in current if r["status"] == "verified"]
     unverified = [r for r in current if r["status"] == "unverified"]
 
@@ -153,7 +166,8 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     write_csv([r for r in everyone if r.get("dietary") or r.get("accessibility")], ACCOMMODATION_FIELDS,
               out / "agm_accommodations.csv")
 
-    summary = {"rsvps": len(current), "new": len(new), "verified": len(verified), "in_person": len(in_person),
+    summary = {"rsvps": len(current), "new": count_new(current, known), "verified": len(verified),
+               "in_person": len(in_person),
                "unverified": len(unverified),
                "meeting_preference": _tally(r.get("meeting_preference") for r in verified),
                "match_method": _tally(r["match_method"] for r in verified),

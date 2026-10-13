@@ -10,6 +10,7 @@ from typing import Callable
 
 from utsu_mail.templates import RenderedMessage, Template
 from utsu_mail.transport import SmtpSender, SmtpSettings, build_message
+from utsu_std.csv_safe import SafeWriter, read_cell
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ def already_sent(log_path: Path) -> set[str]:
     if not log_path.is_file():
         return set()
     with open(log_path, newline="", encoding="utf-8") as f:
-        return {r["to"].lower() for r in csv.DictReader(f) if r.get("status") == "sent"}
+        return {read_cell(r["to"]).lower() for r in csv.DictReader(f) if r.get("status") == "sent"}
 
 
 def append_log(log_path: Path, to: str, status: str, error: str = "", application_uuid: str = "",
@@ -51,7 +52,7 @@ def append_log(log_path: Path, to: str, status: str, error: str = "", applicatio
     log_path.parent.mkdir(parents=True, exist_ok=True)
     is_new = not log_path.is_file()
     with open(log_path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
+        writer = SafeWriter(f)
         if is_new:
             writer.writerow(LOG_FIELDS)
         writer.writerow([datetime.now().isoformat(timespec="seconds"), to, status, error, application_uuid, student_uuid])

@@ -9,7 +9,7 @@ from test_agm import form_csv as agm_form, rsvp, students_db
 from test_sap import AP_ROW, LC_ROW, form_csv as sap_form
 from utsu_core import agm, sap, senate
 from utsu_core import verification
-from utsu_core.incremental import apply_known, mark_superseded
+from utsu_core.incremental import apply_known, count_new, mark_superseded
 from utsu_std.utils import absfile
 
 
@@ -26,12 +26,15 @@ def spy_on_verification(monkeypatch, module, name):
     return seen
 
 
-def test_apply_known_returns_only_new_and_copies_stored_outcome():
-    current = [{"uuid": "a"}, {"uuid": "b"}, {"uuid": "c"}]
-    known = {"a": {"status": "verified", "student_uuid": "s1"}, "c": {"status": "superseded", "student_uuid": None}}
-    assert [x["uuid"] for x in apply_known(current, known)] == ["b", "c"]
-    assert current[0] == {"uuid": "a", "status": "verified", "student_uuid": "s1"}
-    assert len(apply_known(current, known, reverify=True)) == 3
+def test_apply_known_rechecks_new_unverified_and_stale_rows_and_copies_stored_outcome():
+    current = [{"uuid": "a"}, {"uuid": "b"}, {"uuid": "c"}, {"uuid": "d"}]
+    known = {"a": {"status": "verified", "uoft_uuid": "s1", "verification_level": 2},
+             "c": {"status": "superseded", "uoft_uuid": None, "verification_level": None},
+             "d": {"status": "unverified", "uoft_uuid": None, "verification_level": None}}
+    assert [x["uuid"] for x in apply_known(current, known)] == ["b", "c", "d"]
+    assert current[0] == {"uuid": "a", "status": "verified", "uoft_uuid": "s1", "verification_level": 2}
+    assert len(apply_known(current, known, reverify=True)) == 4
+    assert count_new(current, known) == 1
 
 
 def person(first, last, number, ts):
@@ -99,7 +102,7 @@ def test_sap_reverify_checks_everything_again(tmp_path, monkeypatch):
     assert len(seen[-1]) == 2
 
 
-def test_agm_update_verifies_only_new_rsvps(tmp_path, monkeypatch):
+def test_agm_update_verifies_new_rsvps_and_retries_unverified_ones(tmp_path, monkeypatch):
     seen = spy_on_verification(monkeypatch, agm, "verify_rsvps")
     conn = students_db(("Ann", "Lee", 3161), ("Bo", "Chan", 9111))
     out = tmp_path / "out"
@@ -109,11 +112,27 @@ def test_agm_update_verifies_only_new_rsvps(tmp_path, monkeypatch):
 
     second = first + [rsvp("2026/10/02 9:00:00 a.m. AST", "Bo", "Chan", "bo@mail.utoronto.ca")]
     r = agm.process_agm(agm_form(tmp_path / "2.csv", second), conn, output_dir=out)
-    assert seen[-1] == ["Bo Chan"] and r["summary"]["new"] == 1
+    # Ann was verified before, so she is not checked again; Cy (unverified) is retried; Bo is new
+    assert seen[-1] == ["Cy Doe", "Bo Chan"] and r["summary"]["new"] == 1
     # the lists and the unverified reasons still cover the whole export
     assert sorted(x["full_name"] for x in r["verified"]) == ["Ann Lee", "Bo Chan"]
     assert [(x["full_name"], x["reason"]) for x in r["unverified"]] == [("Cy Doe", "name not found")]
     assert conn.execute("SELECT COUNT(*) FROM agm_rsvp").fetchone() == (3,)
+
+
+def test_agm_corrected_row_is_verified_on_the_next_run(tmp_path):
+    conn = students_db(("Cy", "Doe", 5000))
+    out = tmp_path / "out"
+    typo = rsvp("2026/10/01 10:00:00 a.m. AST", "Cy", "Dow", "cy@mail.utoronto.ca")
+    r1 = agm.process_agm(agm_form(tmp_path / "1.csv", [typo]), conn, output_dir=out)
+    assert [x["reason"] for x in r1["unverified"]] == ["name not found"]
+
+    # the row is fixed in place (same timestamp and email, so the same uuid)
+    fixed = rsvp("2026/10/01 10:00:00 a.m. AST", "Cy", "Doe", "cy@mail.utoronto.ca")
+    r2 = agm.process_agm(agm_form(tmp_path / "2.csv", [fixed]), conn, output_dir=out)
+    assert [x["full_name"] for x in r2["verified"]] == ["Cy Doe"] and r2["summary"]["new"] == 0
+    assert conn.execute("SELECT status, uoft_uuid, verification_level FROM agm_rsvp").fetchall() == [
+        ("verified", "u0", 1)]
 
 
 def test_agm_newer_rsvp_supersedes_the_older_one(tmp_path):
@@ -141,11 +160,11 @@ def senate_row(ts, name, number):
     return [ts, "p@gmail.com", name, number, f"{name.split()[0].lower()}@mail.utoronto.ca", "UC", "No"]
 
 
-def test_senate_update_verifies_only_new_applications(tmp_path, monkeypatch):
+def test_senate_update_verifies_new_and_unverified_applications_only(tmp_path, monkeypatch):
     seen = []
-    original = senate.bulk_check_for_students
-    monkeypatch.setattr(senate, "bulk_check_for_students",
-                        lambda names, *a, **k: seen.append(list(names)) or original(names, *a, **k))
+    original = senate.match_students
+    monkeypatch.setattr(senate, "match_students",
+                        lambda people, *a, **k: seen.append([p["full_name"] for p in people]) or original(people, *a, **k))
     conn = students_db(("Ann", "Lee", 3161), ("Bo", "Chan", 9111))
     out = tmp_path / "out"
     first = [senate_row("2026/10/01 9:00:00 a.m. AST", "Ann Lee", "1001231617"),
@@ -155,15 +174,15 @@ def test_senate_update_verifies_only_new_applications(tmp_path, monkeypatch):
 
     second = first + [senate_row("2026/10/02 9:00:00 a.m. AST", "Bo Chan", "1009991111")]
     r2 = senate.verify_senators(senate_form(tmp_path / "2.csv", second), conn.cursor(), output_dir=out)
-    assert seen[-1] == ["Bo Chan"] and r2["new"] == 1
+    assert seen[-1] == ["Cy Doe", "Bo Chan"] and r2["new"] == 1  # Ann was verified before: not checked again
     assert sorted(a["full_name"] for a in r2["verified"]) == ["Ann Lee", "Bo Chan"]
     assert [a["full_name"] for a in r2["unverified"]] == ["Cy Doe"]
     assert len(list(csv.DictReader(open(out / "verified.csv", encoding="utf-8")))) == 2
-    assert sorted(conn.execute("SELECT status, student_uuid FROM senate_application").fetchall(), key=str) == [
-        ("unverified", None), ("verified", "u0"), ("verified", "u1")]
+    assert sorted(conn.execute("SELECT status, uoft_uuid, verification_level FROM senate_application").fetchall(),
+                  key=str) == [("unverified", None, None), ("verified", "u0", 2), ("verified", "u1", 2)]
 
     r3 = senate.verify_senators(senate_form(tmp_path / "3.csv", second), conn.cursor(), output_dir=out)
-    assert r3["new"] == 0 and len(seen) == 2
+    assert r3["new"] == 0 and seen[-1] == ["Cy Doe"]
 
 
 def test_mark_superseded_handles_many_ids():

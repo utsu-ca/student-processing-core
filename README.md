@@ -21,17 +21,69 @@ Pass `--reimport_uoft_data` to replace it (everything is then verified again). W
 `config.json` (flags override it); `--merge_reviews` and `--reimport_uoft_data` are never saved there.
 
 The Senate, SABP and AGM form exports are meant to be re-run as they grow: give the **full export** each time. Every
-application has a deterministic `uuid`, recorded in `senate_application`, `student_aid` or `agm_rsvp`, so a run:
+application has an internal `uuid` (see [Identity and verification levels](#identity-and-verification-levels)),
+recorded in `senate_application`, `student_aid` or `agm_rsvp`, so a run:
 
-- **verifies only the new rows** (`N new, M already processed` is logged and `new` is in `sap_run.json` /
-  `agm_run.json`); already-processed rows keep their stored result. Output files (`verified.csv`, the AGM lists, ...)
+- **verifies the rows that need it**: new ones, and ones that were unverified last time (a corrected row, a reply that
+  was added, or new student data). Rows already verified keep their stored result. `N new, M to verify, K already
+  verified` is logged and `new` is in `sap_run.json` / `agm_run.json`. Output files (`verified.csv`, the AGM lists, ...)
   are rebuilt from the whole export;
-- marks an older submission `superseded` when the same student submits again (the newest is the one used);
+- marks an older submission `superseded` when the same student (the same email) submits again; the newest is the one used;
 - for SABP, keeps every application's batch and record. New applications start a new batch once the last one is full
   or has been assigned to reviewers, and otherwise top it up; slots of superseded applications are never reused. Reviewer
   sheets, decisions and awarded amounts are never touched.
 
 A partial export (only the new responses) is not supported: its outputs would replace the earlier ones.
+
+**Handling a student's reply** to a "more information" email: either correct the row in the form export (same
+timestamp and email, so it keeps its ids) or add the corrected response as a new submission (the newest per email wins).
+The next run verifies it again.
+
+## Identity and verification levels
+
+**IDs are internal database keys, not identities.** `student_uuid` is derived from the student's **email**, and an
+application's `uuid` from the program, its submission timestamp and the same email. When a row has no email the student
+number is used, and when it has neither the name, so the program still works with whatever the form collects. Case and
+spacing are ignored. Because the key is the email, editing a name or student number in a row does not change its ids;
+but a row that gains or loses an email (or changes it) gets new ids, so do not rely on them outside the database. The
+email is typed by the applicant and not checked, so someone could submit using another student's email and replace
+their application as "newest": check unexpected resubmissions.
+
+**Verification works with a name, a student number, or both.** Each application is matched against `uoft_data` using
+whatever it gives (a form may omit either column; at least one must exist):
+
+| given | matches when | `verification_level` | `match_method` |
+|---|---|---|---|
+| name + student number | both belong to the same student (a wrong number never falls back to the name) | 2 | `name + student number` |
+| name only | the name belongs to exactly one student | 1 | `name only` |
+| student number only | the (4-digit) number belongs to exactly one student | 1 | `student number only` |
+| + checked in person | `--record_physical` (below) | 3 | |
+
+The matching `uoft_data.uuid` is stored in `uoft_uuid` and the level in `verification_level`, on each application row
+(`senate_application`, `student_aid`, `agm_rsvp`), next to the email-based `student_uuid`. An application that cannot
+be decided stays `unverified` with a reason (`name not found`, `student number does not match`, `name shared by N
+students; a student number is needed`, ...).
+
+**Physical verification.** List the students who were checked in person (a CSV with `email`, `student_number` or
+`full_name`, or the `student_uuid`; an optional `checked_in` column limits it to the rows that say yes, so a filled-in
+`agm_list_all.csv` works as it is):
+
+```
+python -m utsu_core.main --record_physical door.csv
+```
+
+This raises that student's level-2 applications to level 3. A student with no verified application, or only level 1
+(a name or a number alone), is reported and left as they are; level 3 never goes down on reprocessing.
+
+**Backups.** Every run that uses a database first copies it to `<database folder>/backups/<name>_<YYYYmmdd-HHMMSS>.sqlite`
+(SQLite's backup, so the copy is consistent). `--backup_dir DIR` changes the folder, `--keep_backups N` keeps only the
+newest N (0 keeps all), and `--no_backup` skips it for one run. Backups hold the same private data as the database.
+
+**Spreadsheet safety.** Anything an applicant typed can start with `=`, `+`, `-` or `@`, which Excel and Google Sheets run
+as a formula. In every CSV this program writes, such a text cell gets a leading apostrophe (`'=HYPERLINK(...)`), so it
+shows as text; plain numbers are untouched. The program removes the apostrophe again when it reads its own files back.
+Student names and emails are no longer written to the log (the old `--log_sample` and `--dry_run` flags of
+`utsu_core.main` are gone).
 
 ## Testing mode
 
@@ -61,11 +113,12 @@ python -m utsu_core.main --program sap --sap_file path/to/export.csv [--batch_si
 ```
 
 (`--testing` supplies `testing/output/fake_sabp.csv`.) Column names come from `data/conversion_table_sap.csv`; columns not
-listed there are ignored. For each student only the newest application is kept, then it:
+listed there are ignored. For each student (by email) only the newest application is kept, then it:
 
-- **verifies** name + truncated student number against `uoft_data`, and records one `student_aid` row per application
-  (deterministic `uuid`, matching `student_uuid`, stream, requested amount, WFNI, flags, batch/record). Reprocessing
-  updates those rows but never overwrites `awarded_amount` or `decision`;
+- **verifies** against `uoft_data` by name, student number or both (a form may omit either column; see
+  [Identity and verification levels](#identity-and-verification-levels)), and records one `student_aid` row per
+  application (internal `uuid`, `student_uuid`, `uoft_uuid`, `verification_level`, stream, requested amount, WFNI, flags,
+  batch/record). Reprocessing updates those rows but never overwrites `awarded_amount` or `decision`;
 - **scores** the Weighted Financial Need Index for living-costs applications from the weights in
   `data/wfni_weights.csv` (`field,answer,points`; edit it and re-run, no code change), and adds review
   flags (`membership_not_confirmed`, `amount_over_max`, `instant_approval_eligible`, `high_wfni`, `no_statement`, ...).
@@ -130,12 +183,14 @@ python -m utsu_core.main --program agm --agm_file "path/to/RSVP.csv"
 ```
 
 (`--testing` supplies `testing/output/fake_agm.csv`; `python testing/generate_fake_data.py --only agm` regenerates it.) Columns come from
-`data/conversion_table_agm.csv`. Each person's newest RSVP is kept, then verified against `uoft_data`:
+`data/conversion_table_agm.csv`. Each person's newest RSVP (by email) is kept, then verified against `uoft_data`:
 
-- the form has **no student number**, so people are matched on their ACORN-registered name (`name_only_match` flag). A
-  name shared by several students stays unverified (`name shared by N students`) until the form adds a
-  `Student Number` column, which is then used automatically (`name + student number`);
-- every RSVP gets an `agm_rsvp` row (uuid, matching `student_uuid`, status, reason, flags; no names or emails);
+- the form may have **no student number**, so people are then matched on their ACORN-registered name alone
+  (`name_only_match` flag, level 1). A name shared by several students stays unverified (`name shared by N students`)
+  until the form adds a `Student Number` column, which is then used automatically (`name + student number`, level 2).
+  A row with a student number and no name is matched on the number alone (`student_number_only_match`);
+- every RSVP gets an `agm_rsvp` row (uuid, `student_uuid`, `uoft_uuid`, `verification_level`, status, reason, flags; no
+  names or emails);
 - `<output_dir>` gets **two attendee lists**, sorted by last name with a blank `checked_in` column for the door:
   `agm_list_all.csv` (every verified attendee) and `agm_list_in_person.csv` (those whose Meeting Preference says
   "in person"; anything else, including a blank answer, is left off), plus `agm_unverified.csv` (with the reason),
@@ -183,10 +238,12 @@ skipped on rerun unless `--resend` is given.
 **Rejections and requests for more information** (AGM, SABP, Senate): templates `agm_more_info`, `agm_rejection`,
 `sabp_more_info`, `sabp_rejection`, `senate_more_info` and `senate_rejection`. Every subject carries
 `[Ref <application uuid>]` and every body lists the application uuid, the student uuid and the submission timestamp.
-The application uuid is the `uuid` of the application row (derived from its submission timestamp); the student uuid is
-`uoft_data.uuid` when the student can be matched fully or partly (by student number or name), otherwise a stable uuid
-derived from the student number (the email for AGM). `notices` builds the recipient file, which also lists which
-details could not be verified (name, student number) for `more_info`:
+Both ids are internal database keys, kept in the email only as a reference for replies (a reply is matched back by the
+student's email, student number or name, not by the id). The application uuid is the `uuid` of the application row
+(program + submission timestamp + the student's email); the student uuid is derived from the student's email, so it is
+the same before and after verification (the link to `uoft_data` is stored in `uoft_uuid`). `notices` builds the
+recipient file, which also lists which details could not be verified (name, student number) for `more_info`, judged
+from what the application actually gave:
 
 ```
 python -m utsu_mail.notices senate more_info                          # reads <output_dir>/unverified.csv

@@ -11,7 +11,7 @@ from utsu_mail.notices import NAME_FIELD, NUMBER_FIELD, diagnose, main as notice
 from utsu_mail.recipients import read_csv as read_csv_rows, read_sql, split_by_validity
 from utsu_mail.schema import schema_fields
 from utsu_mail.templates import Template, TemplateError, load_template, parse_template
-from utsu_std.utils import generate_uuid
+from utsu_std.utils import student_uuid_for
 
 ROOT = Path(__file__).resolve().parents[1]
 SETTINGS = transport.SmtpSettings(host="localhost", from_addr="elections@utsu.ca", from_name="UTSU", security="none", delay=0)
@@ -152,17 +152,23 @@ def make_uoft_db(path):
 def test_diagnose_names_the_unverified_fields(tmp_path):
     make_uoft_db(tmp_path / "db.sqlite")
     cur = sqlite3.connect(tmp_path / "db.sqlite").cursor()
-    derived = lambda key: generate_uuid("student|" + key)
     ada = {"full_name": "Ada Lovelace", "id": "1006639715", "email": "ada@x.ca"}
+    ada_id = student_uuid_for("ada@x.ca")  # the internal student id comes from the email, verified or not
 
-    assert diagnose(ada, cur) == ("u-ada", [])
-    assert diagnose({**ada, "id": "1000000009"}, cur) == ("u-ada", [NUMBER_FIELD])
-    assert diagnose({**ada, "full_name": "Adda Lovelace"}, cur) == ("u-ada", [NAME_FIELD])
+    assert diagnose(ada, cur) == (ada_id, [])
+    assert diagnose({**ada, "id": "1000000009"}, cur) == (ada_id, [NUMBER_FIELD])
+    assert diagnose({**ada, "full_name": "Adda Lovelace"}, cur) == (ada_id, [NAME_FIELD])
     assert diagnose({"full_name": "Zed Nobody", "id": "1009999999", "email": "z@x.ca"}, cur) == \
-        (derived("1009999999"), [NAME_FIELD, NUMBER_FIELD])
-    # the AGM form has no student number: only a shared name makes one necessary
-    assert diagnose({"full_name": "Sam Lee", "email": "s@x.ca"}, cur) == (derived("s@x.ca"), [NUMBER_FIELD])
-    assert diagnose({"full_name": "Nobody", "email": "N@x.ca"}, cur) == (derived("n@x.ca"), [NAME_FIELD])
+        (student_uuid_for("z@x.ca"), [NAME_FIELD, NUMBER_FIELD])
+    # only a name: a shared name needs a student number, an unknown name needs a better name
+    assert diagnose({"full_name": "Sam Lee", "email": "s@x.ca"}, cur) == (student_uuid_for("s@x.ca"), [NUMBER_FIELD])
+    assert diagnose({"full_name": "Nobody", "email": "N@x.ca"}, cur) == (student_uuid_for("n@x.ca"), [NAME_FIELD])
+    # only a student number: verified when it is the only one, else it must be wrong
+    assert diagnose({"id": "1000011119", "email": "s1@x.ca"}, cur) == (student_uuid_for("s1@x.ca"), [])
+    assert diagnose({"id": "1000099999", "email": "q@x.ca"}, cur)[1] == [NUMBER_FIELD]
+    # no email: the student number identifies them; nothing at all asks for both
+    assert diagnose({"id": "1000099999"}, cur)[0] == student_uuid_for(student_number="1000099999")
+    assert diagnose({"email": "e@x.ca"}, cur)[1] == [NAME_FIELD, NUMBER_FIELD]
 
 
 def test_notices_to_tracked_email(monkeypatch, tmp_path):
@@ -180,18 +186,19 @@ def test_notices_to_tracked_email(monkeypatch, tmp_path):
             "--config", str(tmp_path / "none.json"), "--output", str(out)]
     assert notices_main(base) == 0
 
+    ada_id = student_uuid_for("ada@x.ca")
     rows = read_csv_rows(out)
     assert [r["application_uuid"] for r in rows] == ["app-1"]  # app-2 is fully matched, so nothing to ask
-    assert rows[0]["student_uuid"] == "u-ada" and rows[0]["unverified_fields"] == NUMBER_FIELD
+    assert rows[0]["student_uuid"] == ada_id and rows[0]["unverified_fields"] == NUMBER_FIELD
 
     ready, skipped = campaign.prepare(load_template("senate_more_info", ROOT / "templates" / "email"), rows, "email")
     assert not skipped and "[Ref app-1]" in ready[0].rendered.subject
-    assert "Student ID:     u-ada" in ready[0].rendered.text and NUMBER_FIELD in ready[0].rendered.text
+    assert f"Student ID:     {ada_id}" in ready[0].rendered.text and NUMBER_FIELD in ready[0].rendered.text
 
     log = tmp_path / "log.csv"
     assert campaign.send_all(SETTINGS, ready, log)["sent"] == 1
     logged = read_csv_rows(log)
-    assert (logged[0]["application_uuid"], logged[0]["student_uuid"]) == ("app-1", "u-ada")
+    assert (logged[0]["application_uuid"], logged[0]["student_uuid"]) == ("app-1", ada_id)
 
     # a rejection needs a reason
     assert notices_main(["sabp", "rejection"] + base[2:]) == 2

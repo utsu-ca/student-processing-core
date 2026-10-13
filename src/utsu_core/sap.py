@@ -13,22 +13,26 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from utsu_core.incremental import apply_known, known_rows, mark_superseded
+from utsu_core.incremental import (OUTCOME_SQL_TYPES, add_missing_columns, apply_known, count_new, known_rows,
+                                   mark_superseded)
 from utsu_core.senate import keep_newest, parse_submission_ts
-from utsu_core.verification import bulk_check_for_students, setup_reader
+from utsu_core.verification import match_students, setup_reader
 from utsu_core.wfni import compute_wfni, current_weights
-from utsu_std.utils import absfile, generate_uuid, normalize_case
-from utsu_std.parsing_utils import get_trunc_id, split_multi
+from utsu_std.csv_safe import SafeDictWriter
+from utsu_std.utils import absfile, application_uuid_for, normalize_case, student_uuid_for
+from utsu_std.parsing_utils import split_multi
 
 logger = logging.getLogger(__name__)
 
 LC, AP = "LC", "AP"
+IDENTITY_FIELDS = ("id", "first_name", "last_name")  # the form needs at least one; applications may give any
 STREAM_NAMES = {LC: "Living-costs Bursary", AP: "Academic Pursuits Bursary"}
 # Largest request per term: LABs are $1,500 plus up to $1,000 of Emergency Bursary; APRs are $1,500.
 MAX_REQUEST = {LC: 2500, AP: 1500}
 INSTANT_APPROVAL_BELOW = 150
 
-MASTER_FIELDS = ["uuid", "status", "student_uuid", "submission_ts", "terms", "id", "full_name", "email", "faculty",
+MASTER_FIELDS = ["uuid", "status", "student_uuid", "uoft_uuid", "verification_level", "match_method", "submission_ts",
+                 "terms", "id", "full_name", "email", "faculty",
                  "stream", "subsidies", "requested_amount", "wfni", "emergency", "flags", "batch", "record"]
 REVIEW_FIELDS = ["record_id", "uuid", "stream", "subsidies", "requested_amount", "wfni", "emergency",
                  "general_statement", "need_level", "notes"]
@@ -69,8 +73,9 @@ def redact(text: str, names: list[str] = ()) -> str:
 
 
 def sap_uuid(app: dict[str, str]) -> str:
-    """Deterministic id for an application, so reprocessing the same form yields the same uuid."""
-    return generate_uuid("sap|" + "|".join(app.get(k, "").strip() for k in ("submission_ts", "id", "email")))
+    """Internal id for an application, so reprocessing the same form yields the same uuid."""
+    return application_uuid_for("sap", app.get("submission_ts", ""), app.get("email", ""), app.get("id", ""),
+                                app.get("full_name", ""))
 
 
 def build_application(row: dict[str, str]) -> dict:
@@ -87,7 +92,7 @@ def build_application(row: dict[str, str]) -> dict:
     app["emergency"] = int(any("emergency bursary" in s.lower() for s in split_multi(app.get("lc_subsidies", ""))))
     app["faculty"] = app.get("faculty", "").split(" - ")[0].strip()
     app["uuid"] = sap_uuid(app)
-
+    app["student_uuid"] = student_uuid_for(app.get("email", ""), app.get("id", ""), app["full_name"])
     weights = current_weights()
     wfni, unknown = compute_wfni(app, weights)
     app["wfni"] = "" if wfni is None else wfni
@@ -113,27 +118,20 @@ def build_application(row: dict[str, str]) -> dict:
 
 
 def read_applications(csv_file: Path) -> list[dict]:
-    reader = setup_reader(csv_file, absfile("data/conversion_table_sap.csv"))
+    reader = setup_reader(csv_file, absfile("data/conversion_table_sap.csv"), optional=IDENTITY_FIELDS,
+                          identity=IDENTITY_FIELDS)
     applications = [build_application(row) for row in reader]
     return [a for a in applications if a.get("id") or a["full_name"]]
 
 
-def verify_applications(applications: list[dict], cursor: sqlite3.Cursor) -> dict[tuple, str]:
-    """Match applications to uoft_data by (name, truncated number). Returns {(name, trunc): uoft_data.uuid}."""
-    matched: dict[tuple, str] = {}
-    for start in range(0, len(applications), 50):
-        batch = applications[start:start + 50]
-        names = [a["full_name"] for a in batch]
-        trunc_ids = [get_trunc_id(a["id"]) if a.get("id") else None for a in batch]
-        result = bulk_check_for_students(names, trunc_ids, cursor)
-        # matches are uoft_data rows: (uuid, trunc_id, first_name, last_name, full_name, ...)
-        matched.update({(row[4], row[1]): row[0] for row in result["matches"]})
-    return matched
-
-
-def _match_key(app: dict) -> tuple[str, int | str | None]:
-    trunc = get_trunc_id(app["id"]) if app.get("id") else None
-    return app["full_name"], int(trunc) if str(trunc).isdigit() else trunc
+def verify_applications(applications: list[dict], cursor: sqlite3.Cursor) -> None:
+    """
+    Check applications against uoft_data by name, student number or both (whatever each one gives) and set
+    status, uoft_uuid, verification_level and match_method on each.
+    """
+    for app, match in zip(applications, match_students(applications, cursor)):
+        app.update(uoft_uuid=match.uoft_uuid, verification_level=match.level, match_method=match.method,
+                   status="verified" if match.verified else "unverified")
 
 
 def assign_batches(verified: list[dict], batch_size: int = 50, placed: dict[str, tuple[int, int]] | None = None,
@@ -236,6 +234,7 @@ def ensure_schema(conn: sqlite3.Connection):
                             WHEN batch IN (SELECT batch FROM sap_batch_reviewer) THEN 'in_review'
                             WHEN status = 'verified' THEN 'scored' END""")
         conn.commit()
+    add_missing_columns(conn, "student_aid", {"student_uuid": "TEXT", **OUTCOME_SQL_TYPES})
 
 
 def mark_in_review(conn: sqlite3.Connection, batches) -> int:
@@ -343,7 +342,7 @@ def _write_sheet(rows: list[dict], number: int, directory: Path, reviewer: str |
     """batch_NNN.csv (to fill in) and batch_NNN.txt (to read) for one batch."""
     directory.mkdir(parents=True, exist_ok=True)
     with open(directory / f"batch_{number:03d}.csv", "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=REVIEW_FIELDS)
+        writer = SafeDictWriter(f, fieldnames=REVIEW_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
     title = f"BATCH {number:03d}" + (f"  |  reviewer: {reviewer}" if reviewer else "")
@@ -447,7 +446,7 @@ def merge_reviews(conn: sqlite3.Connection, output_dir: Path | str = "secrets/ou
             "suggested_amount": "" if suggested == "" else f"{suggested:g}", "status": status,
             "notes": " | ".join(f"{r}: {note}" for r, (_, note) in sorted(given.items()) if note)})
     with open(out / "sap_merged_ratings.csv", "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.DictWriter(f, fieldnames=MERGED_FIELDS)
+        writer = SafeDictWriter(f, fieldnames=MERGED_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -469,11 +468,15 @@ def merge_reviews(conn: sqlite3.Connection, output_dir: Path | str = "secrets/ou
 
 
 _UPSERT = """
-INSERT INTO student_aid (uuid, student_uuid, student_number, submission_ts, terms, status, stage, aid_type,
-                         requested_amount, wfni, emergency, flags, batch, record)
-VALUES (:uuid, :student_uuid, :id, :submission_ts, :terms, :status, :stage, :stream, :requested_amount, :wfni,
-        :emergency, :flags, :batch, :record)
-ON CONFLICT(uuid) DO UPDATE SET student_uuid = excluded.student_uuid, status = excluded.status,
+INSERT INTO student_aid (uuid, student_uuid, uoft_uuid, verification_level, match_method, student_number,
+                         submission_ts, terms, status, stage, aid_type, requested_amount, wfni, emergency, flags,
+                         batch, record)
+VALUES (:uuid, :student_uuid, :uoft_uuid, :verification_level, :match_method, :id, :submission_ts, :terms, :status,
+        :stage, :stream, :requested_amount, :wfni, :emergency, :flags, :batch, :record)
+ON CONFLICT(uuid) DO UPDATE SET student_uuid = excluded.student_uuid, uoft_uuid = excluded.uoft_uuid,
+    match_method = excluded.match_method, status = excluded.status,
+    verification_level = CASE WHEN excluded.status = 'verified' AND student_aid.verification_level = 3
+                              THEN 3 ELSE excluded.verification_level END,
     stage = COALESCE(student_aid.stage, excluded.stage),
     aid_type = excluded.aid_type, requested_amount = excluded.requested_amount, wfni = excluded.wfni,
     emergency = excluded.emergency, flags = excluded.flags,
@@ -486,7 +489,8 @@ def save_to_db(conn: sqlite3.Connection, applications: list[dict]):
     ensure_schema(conn)
     rows = [{**a, "requested_amount": float(a["requested_amount"]) if a["requested_amount"] != "" else None,
              "wfni": a["wfni"] if a["wfni"] != "" else None, "batch": a.get("batch"), "record": a.get("record"),
-             "stage": a.get("stage"),
+             "stage": a.get("stage"), "uoft_uuid": a.get("uoft_uuid"),
+             "verification_level": a.get("verification_level"), "match_method": a.get("match_method"),
              "student_uuid": a.get("student_uuid")} for a in applications]
     conn.executemany(_UPSERT, rows)
     conn.commit()
@@ -495,7 +499,7 @@ def save_to_db(conn: sqlite3.Connection, applications: list[dict]):
 
 def write_master(applications: list[dict], path: Path):
     with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=MASTER_FIELDS, extrasaction="ignore")
+        writer = SafeDictWriter(f, fieldnames=MASTER_FIELDS, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(applications)
     logger.info(f"Wrote {len(applications)} rows to {path}")
@@ -520,15 +524,15 @@ def process_sap(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     applications = read_applications(csv_file)
     current = keep_newest(applications)
     ensure_schema(conn)
-    new = apply_known(current, known_rows(conn, "student_aid"), reverify)
+    known = known_rows(conn, "student_aid")
+    to_check = apply_known(current, known, reverify)
     logger.info(f"{len(applications)} SABP applications read; {len(applications) - len(current)} older duplicate "
-                f"submissions dropped; {len(new)} new, {len(current) - len(new)} already processed")
+                f"submissions dropped; {count_new(current, known)} new, {len(to_check)} to verify, "
+                f"{len(current) - len(to_check)} already verified")
 
-    matched = verify_applications(new, conn.cursor())
-    for app in new:
-        app["student_uuid"] = matched.get(_match_key(app))
-        app["status"] = "verified" if app["student_uuid"] else "unverified"
-        if not app["student_uuid"]:
+    verify_applications(to_check, conn.cursor())
+    for app in to_check:
+        if app["status"] == "unverified":
             logger.warning(f"UNVERIFIED SABP application {app['uuid']}")
     verified = [a for a in current if a["status"] == "verified"]
     unverified = [a for a in current if a["status"] == "unverified"]
@@ -552,7 +556,7 @@ def process_sap(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     stages = {stage or "(none)": n for stage, n in conn.execute(
         "SELECT stage, COUNT(*) FROM student_aid WHERE status = 'verified' GROUP BY stage ORDER BY stage")}
 
-    summary = {"applications": len(current), "new": len(new), "verified": len(verified),
+    summary = {"applications": len(current), "new": count_new(current, known), "verified": len(verified),
                "unverified": len(unverified), "stages": stages, "wfni_weights_sha256": current_weights().sha256,
                "batches": len(batches), "batch_size": batch_size,
                "reviewers": {str(b): rs for b, rs in assignments.items()},

@@ -6,6 +6,7 @@ from collections import Counter
 from pathlib import Path
 
 from utsu_core.senate import PREF_PREFIX
+from utsu_std.csv_safe import SafeDictWriter
 from utsu_std.parsing_utils import division_code
 from utsu_std.utils import absfile
 
@@ -261,7 +262,7 @@ def run_seating(verified_csv: Path | str, seats_file: Path | str, output_dir: Pa
         ("unseated.csv", ["uuid", "full_name", "reason"], result["unseated"]),
     ):
         with open(out / name, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fields)
+            writer = SafeDictWriter(f, fieldnames=fields)
             writer.writeheader()
             writer.writerows(rows)
 

