@@ -124,11 +124,11 @@ def test_the_run_summary_has_descriptive_names(tmp_path):
         rsvp("2026/10/01 10:00:00 a.m. AST", "Cy", "Doe", "cy@mail.utoronto.ca")])
     conn = students_db(("Ann", "Lee", 3161))
     s = agm.process_agm(form, conn, output_dir=tmp_path / "out")["summary"]
-    assert (s["submissions_in_export"], s["new_submissions_this_run"], s["processed_this_run"],
-            s["binding_rsvps"], s["verified_rsvps"], s["unverified_rsvps"]) == (3, 3, 3, 2, 1, 1)
+    assert (s["submissions_in_export"], s["binding_rsvps"], s["verified_rsvps"], s["unverified_rsvps"]) == (3, 2, 1, 1)
     assert not {"new", "rsvps", "in_person", "verified", "unverified"} & set(s)
-    again = agm.process_agm(form, conn, output_dir=tmp_path / "out")["summary"]
-    assert (again["new_submissions_this_run"], again["processed_this_run"], again["binding_rsvps"]) == (0, 0, 2)
+    again = agm.process_agm(form, conn, output_dir=tmp_path / "out")["summary"]  # the full export again: same result
+    assert (again["submissions_in_export"], again["binding_rsvps"]) == (3, 2)
+    assert conn.execute("SELECT COUNT(*) FROM agm_rsvp").fetchone() == (3,)
 
 
 def test_in_person_detection():

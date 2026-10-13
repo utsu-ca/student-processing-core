@@ -125,7 +125,7 @@ def send_all(settings: SmtpSettings, ready: list[Prepared], log_path: Path,
                     logger.error(f"FAILED {item.to}: {e}")
                 else:
                     counts["sent"] += 1
-                    append_log(log_path, item.to,                     "sent", "", item.application_uuid, item.student_uuid)
+                    append_log(log_path, item.to, "sent", "", item.application_uuid, item.student_uuid)
                     logger.info(f"SENT {item.to} ({i + 1}/{len(ready)})")
                 if settings.delay and i < len(ready) - 1:
                     sleep(settings.delay)

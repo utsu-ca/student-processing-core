@@ -22,10 +22,9 @@ import re
 import sqlite3
 from pathlib import Path
 
-from utsu_core.incremental import dedupe_by_uuid, fingerprint, select_current
-from utsu_core.integrity import hold
-from utsu_core.pipeline import Run, ensure_tracked_table
-from utsu_core.verification import METHOD_NAME, mapped_names, match_students, setup_reader
+from utsu_core.selection import dedupe_by_uuid, select_current
+from utsu_core.pipeline import Run, ensure_table
+from utsu_core.verification import METHOD_NAME, match_students, setup_reader
 from utsu_std.csv_safe import write_rows
 from utsu_std.utils import absfile, application_uuid_for, normalize_case, student_uuid_for
 
@@ -137,19 +136,14 @@ def build_rsvp(row: dict[str, str]) -> dict:
 def read_rsvps(csv_file: Path) -> list[dict]:
     mapping = absfile("data/conversion_table_agm.csv")
     reader = setup_reader(csv_file, mapping, optional=IDENTITY_COLUMNS, identity=IDENTITY_COLUMNS)
-    fields = mapped_names(mapping) + ["Student Number", "Division"]
-    rsvps = []
-    for row in reader:
-        rsvp = build_rsvp(row)
-        rsvp["source_hash"] = fingerprint(row, fields)
-        rsvps.append(rsvp)
+    rsvps = [build_rsvp(row) for row in reader]
     return dedupe_by_uuid([r for r in rsvps if r["full_name"] or r["student_number"]])
 
 
 def verify_file(csv_file: Path | str, cursor: sqlite3.Cursor, output_dir: Path | str) -> list[dict]:
     """
     Read an RSVP export, verify it and write agm_verification.csv (private: names and emails) to output_dir, with
-    the binding RSVP per person (see incremental.select_current). Returns those RSVPs. Nothing is saved.
+    the binding RSVP per person (see selection.select_current). Returns those RSVPs. Nothing is saved.
     """
     cursor.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'uoft_data'")
     if not cursor.fetchone():
@@ -172,21 +166,16 @@ def attendee_list(verified: list[dict], in_person_only: bool = False) -> list[di
     return sorted(rows, key=lambda r: (r.get("last_name", "").lower(), r.get("first_name", "").lower(), r["uuid"]))
 
 
-_UPSERT = """
+_INSERT = """
 INSERT INTO agm_rsvp (uuid, student_uuid, uoft_uuid, verification_level, status, reason, match_method,
-                      submission_ts, meeting_preference, contact_ok, flags, source_hash)
+                      submission_ts, meeting_preference, contact_ok, flags)
 VALUES (:uuid, :student_uuid, :uoft_uuid, :verification_level, :status, :reason, :match_method, :submission_ts,
-        :meeting_preference, :contact_ok, :flags, :source_hash)
-ON CONFLICT(uuid) DO UPDATE SET student_uuid = excluded.student_uuid, uoft_uuid = excluded.uoft_uuid,
-    verification_level = excluded.verification_level,
-    status = excluded.status, reason = excluded.reason, match_method = excluded.match_method,
-    source_hash = COALESCE(excluded.source_hash, agm_rsvp.source_hash),
-    flags = excluded.flags
+        :meeting_preference, :contact_ok, :flags)
 """
 
 
 def ensure_schema(conn: sqlite3.Connection):
-    ensure_tracked_table(conn, "src/schema/agm.sql", "agm_rsvp")
+    ensure_table(conn, "src/schema/agm.sql")
 
 
 def write_csv(rows: list[dict], fields: list[str], path: Path):
@@ -201,39 +190,35 @@ def _tally(values) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
-def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path | str = "secrets/output",
-                reverify: bool = False) -> dict:
+def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path | str = "secrets/output") -> dict:
     """
     Process an AGM voter RSVP export and write, under output_dir:
       agm_list_all.csv        every verified attendee (door list; no ids; meeting preference as In-person / Virtual)
       agm_list_in_person.csv  verified attendees whose meeting preference is in person
       agm_unverified.csv      RSVPs that could not be verified, with the reason
       agm_accommodations.csv  dietary and accessibility needs of verified attendees, by uuid only (no names)
-      alerts_agm.csv          what a person has to look at (invalid, duplicate, non-binding RSVPs)
+      alerts_agm.csv          what a person has to look at (duplicate, ambiguous, non-binding RSVPs)
       agm_run.json            counts
-    The lists carry names and emails and are private. Every RSVP is also recorded in the agm_rsvp table.
+    The lists carry names and emails and are private. The agm_rsvp table is rebuilt from the export.
 
-    Give the full export each time. An RSVP is looked at once: a new one is verified. An unverified one whose row
-    was edited is processed again (that is how a correction is made); a verified one is immutable and an edit to
-    its row makes it invalid: it stays verified but is held out of the attendee lists and raised in
-    alerts_agm.csv until a person deals with it (integrity.py). With `reverify` (after new student data)
-    everything is verified again. Per person, the newest verified RSVP is the binding one; a newer unverified one
-    never replaces it (it becomes non-binding). The lists always cover the whole export.
+    Give the full export each time. Every RSVP in it is verified against the current student data (the status
+    follows the student data, so it can change when the data is re-imported). An edit or a re-submission is a newer
+    RSVP: per person, the newest verified RSVP is the binding one; a newer unverified one never replaces it (it
+    becomes non-binding). The lists always cover the whole export.
     """
     out = Path(absfile(output_dir))
     out.mkdir(parents=True, exist_ok=True)
 
     rsvps = read_rsvps(Path(csv_file))
     ensure_schema(conn)
-    run = Run(conn, "agm_rsvp", "AGM", "agm", rsvps, reverify, stored_columns=("reason", "flags"))
-    verify_rsvps(run.to_check, conn.cursor())
+    run = Run(conn, "agm_rsvp", "AGM", "agm", rsvps, sticky=False)
+    verify_rsvps(rsvps, conn.cursor())
     run.select()
     unverified = [r for r in run.current if r["status"] == "unverified"]
 
-    conn.executemany(_UPSERT, run.to_save())
+    run.replace_all(_INSERT)
     run.settle()
-    # an invalid (held) RSVP stays verified but is left out of the attendee lists until a person resolves it
-    verified, held = hold([r for r in run.current if r["status"] == "verified"])
+    verified = [r for r in run.current if r["status"] == "verified"]
     everyone, in_person = attendee_list(verified), attendee_list(verified, in_person_only=True)
     write_csv(everyone, LIST_FIELDS, out / "agm_list_all.csv")
     write_csv(in_person, LIST_FIELDS, out / "agm_list_in_person.csv")
@@ -244,7 +229,7 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     ambiguous = [r for r in unverified if is_ambiguous(r.get("reason", ""))]
     alerts = run.alert(out, ambiguous)
 
-    summary = {**run.summary(held, alerts),
+    summary = {**run.summary(alerts),
                "binding_rsvps": len(run.current),
                "verified_rsvps": len(verified), "verified_in_person": len(in_person),
                "unverified_rsvps": len(unverified), "ambiguous_matches": len(ambiguous),
@@ -256,7 +241,7 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
                "flags": _tally(f for r in run.current for f in (r.get("flags") or "").split(";") if f)}
     (out / "agm_run.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     logger.info(f"AGM: {len(verified)} verified ({len(in_person)} in person), {len(unverified)} unverified")
-    return {"verified": verified, "in_person": in_person, "unverified": unverified, "held": held, "alerts": alerts,
+    return {"verified": verified, "in_person": in_person, "unverified": unverified, "alerts": alerts,
             "ambiguous": ambiguous, "summary": summary}
 
 

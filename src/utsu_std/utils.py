@@ -4,6 +4,7 @@ from argparse import ArgumentParser, Namespace
 import hashlib
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import sys
@@ -99,35 +100,50 @@ def addLoggingLevel(levelName, levelNum, methodName=None):
     setattr(logging, methodName, logToRoot)
 
 
+class ConfigError(ValueError):
+    """The config file exists but cannot be read as a JSON object."""
+
+
 def save_config_file(path: str, cfg):
-    """Save JSON config."""
+    """Save JSON config. The file is written to a temporary name and then moved into place, so a failure never leaves it half-written."""
+    tmp = None
     try:
         p = absfile(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        with p.open("w", encoding="utf-8") as f:
+        tmp = p.with_name(p.name + ".tmp")
+        with tmp.open("w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, p)
         logger.info(f"Saved configuration to {path}")
     except Exception as e:
         logger.error(f"Failed to save config to {path}: {e}")
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
-def load_config_file(path: str) -> dict[any, any]: # type: ignore
-    """Load JSON. Return an object/dict."""
+def load_config_file(path: str, strict: bool = False) -> dict[any, any]: # type: ignore
+    """
+    Load JSON. Return an object/dict. A missing file gives {}. A file that cannot be read as a JSON object gives {}
+    and an error in the log, or with `strict` raises `ConfigError`, so a caller that writes the file back never
+    replaces a config it could not read.
+    """
     if not path:
         return {}
+    p = absfile(path)
+    if not p.exists():
+        logger.error(f"Config file not found: {path}")
+        return {}
     try:
-        p = absfile(path)
-        if not p.exists():
-            logger.error(f"Config file not found: {path}")
-            return {}
-        with p.open("r", encoding="utf-8") as f:
-            raw = f.read()
-            cfg = json.loads(raw)
-            logger.info(f"Loaded config: {path}")
-            return dict(cfg)
-    except Exception as e:
+        cfg = json.loads(p.read_text(encoding="utf-8-sig"))
+        if not isinstance(cfg, dict):
+            raise ValueError(f"expected a JSON object, got {type(cfg).__name__}")
+    except (OSError, ValueError) as e:
+        if strict:
+            raise ConfigError(f"Cannot read the config file {p}: {e}. Fix or remove it; it was left unchanged.") from e
         logger.error(f"Failed to load config file {path}: {e}")
         return {}
+    logger.info(f"Loaded config: {path}")
+    return cfg
 
 
 def load_and_merge_config(args: Namespace, parser: ArgumentParser, transient: tuple[str, ...] = ()):
@@ -136,8 +152,10 @@ def load_and_merge_config(args: Namespace, parser: ArgumentParser, transient: tu
     Only replace a value if the CLI used something *not equal*
     to the defaultargparse value.
     `transient` flags apply to this run only: they are taken from the CLI and never saved to the config file.
+    A config file that exists but cannot be read raises `ConfigError` and is left as it is (it would otherwise be
+    overwritten, losing settings such as the `smtp` section).
     """
-    conf = load_config_file(args.config)
+    conf = load_config_file(args.config, strict=True)
 
     for key, value in vars(args).items():
         # skip config-related keys

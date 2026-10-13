@@ -38,7 +38,10 @@ def import_uoft_data(conn: sqlite3.Connection, csv_file: Path):
     logger.info(f"Importing UofT data from {csv_file}")
     preprocessed_csv_file = preprocess_uoft_csv(csv_file)
     logger.info(f"Preprocessed UofT CSV file: {csv_file} -> {preprocessed_csv_file}")
-    import_csv_to_db(preprocessed_csv_file, "uoft_data", conn)
+    try:
+        import_csv_to_db(preprocessed_csv_file, "uoft_data", conn)
+    finally:  # the cleaned copy holds students' names, so it is not left on disk
+        preprocessed_csv_file.unlink(missing_ok=True)
 
     logger.info(f"Indexing uoft_data table, please wait...")
     # apply index on Last Name column, followed by Truncated Student Number
@@ -83,15 +86,22 @@ def preprocess_uoft_csv(csv_file: Path):
         writer.writeheader()
 
         # step two: process rows
+        trunc_id_indx = headers.index("Truncated Student Number")
+        last_name_indx = headers.index("Last Name")
+        first_name_indx = headers.index("First Name")
+        faculty_indx = headers.index("Faculty")
+        division_indx = headers.index("Division")
+        needed = max(trunc_id_indx, last_name_indx, first_name_indx, faculty_indx, division_indx) + 1
         for row in reader:
+            line = reader.line_num
+            if not any(cell.strip() for cell in row):  # blank lines, such as one at the end of the file
+                continue
+            if len(row) < needed:
+                f_out.close()
+                processed_csv_file.unlink()
+                raise ValueError(f"Line {line} of {csv_file} has {len(row)} column(s); expected at least {needed}")
             # using dictionary so order doesn't matter
             row_dict = {}
-
-            trunc_id_indx = headers.index("Truncated Student Number")
-            last_name_indx = headers.index("Last Name")
-            first_name_indx = headers.index("First Name")
-            faculty_indx = headers.index("Faculty")
-            division_indx = headers.index("Division")
 
             row_dict["trunc_id"] = ascii_digits(row[trunc_id_indx])
             row_dict["last_name"] = normalize_case(row[last_name_indx])

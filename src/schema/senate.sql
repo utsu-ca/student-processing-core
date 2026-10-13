@@ -1,16 +1,13 @@
 PRAGMA foreign_keys = ON;
 
--- One row per Senate application. `uuid` is the typed id `application:senate:<uuid>`, derived from the submission
--- timestamp and the student's identity key, so a re-exported form is recognised: an application that was processed
--- is never processed again (a row edited afterwards is logged as an error instead). `student_uuid` is the typed
--- per-student id (`student:email:...`, from their email; else student number; else name). `uoft_uuid` is the
--- matching uoft_data.uuid (NULL when unverified). `verification_level` is the number of factors (name, student
+-- One row per Senate application, rebuilt from the full form export on every run. `uuid` is the typed id
+-- `application:senate:<uuid>`, derived from the submission timestamp and the student's identity key (Google Forms
+-- stamps an edited or re-submitted response with a new timestamp, so that is a newer application). `student_uuid` is
+-- the typed per-student id (`student:email:...`, from their email; else student number; else name). `uoft_uuid` is
+-- the matching uoft_data.uuid (NULL when unverified). `verification_level` is the number of factors (name, student
 -- number, division) that matched the same student: 1 a name or student number alone, 2 any two, 3 all three.
--- `source_hash` fingerprints the form row as it was processed.
 -- `status` is verified or unverified; later superseded (a newer submission from the same student replaced it) or
--- non_binding (an unverified submission that did not replace a verified one) or not_considered. `invalid_reason` is
--- set when a verified application's form row was edited after it was processed (it stays in progress, held for a
--- person: see integrity.py); NULL means valid.
+-- non_binding (an unverified submission that did not replace a verified one) or not_considered.
 CREATE TABLE IF NOT EXISTS senate_application (
     uuid TEXT PRIMARY KEY,
     student_uuid TEXT,
@@ -20,7 +17,5 @@ CREATE TABLE IF NOT EXISTS senate_application (
     status TEXT NOT NULL,
     submission_ts TEXT,
     delegated TEXT,
-    source_hash TEXT,
-    invalid_reason TEXT,
     import_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

@@ -4,10 +4,9 @@ import re
 import sqlite3
 from pathlib import Path
 
-from utsu_core.incremental import dedupe_by_uuid, fingerprint
-from utsu_core.integrity import hold
-from utsu_core.pipeline import Run, ensure_tracked_table
-from utsu_core.verification import mapped_names, match_students, setup_reader
+from utsu_core.selection import dedupe_by_uuid
+from utsu_core.pipeline import Run, ensure_table
+from utsu_core.verification import match_students, setup_reader
 from utsu_std.csv_safe import write_rows
 from utsu_std.utils import absfile, application_uuid_for, student_uuid_for
 
@@ -15,8 +14,7 @@ logger = logging.getLogger(__name__)
 
 OUTPUT_FIELDS = ["uuid", "submission_ts", "full_name", "id", "email", "personal_email", "division", "delegated"]
 # what verified.csv / unverified.csv carry: the form's fields plus the internal ids and how it was verified
-RESULT_FIELDS = OUTPUT_FIELDS + ["student_uuid", "uoft_uuid", "verification_level", "match_method", "flags",
-                                 "invalid_reason"]
+RESULT_FIELDS = OUTPUT_FIELDS + ["student_uuid", "uoft_uuid", "verification_level", "match_method", "flags"]
 OPTIONAL_FIELDS = ("id", "full_name")
 IDENTITY_FIELDS = ("full_name",)  # the form needs a name column; the student number is optional and only narrows a match
 PREF_PREFIX = "pref:"
@@ -55,32 +53,25 @@ def write_results(verified: list[dict[str, str]], unverified: list[dict[str, str
         write_rows(output_dir / name, RESULT_FIELDS + pref_fields, rows)
 
 
-_UPSERT = """
+_INSERT = """
 INSERT INTO senate_application (uuid, student_uuid, uoft_uuid, verification_level, match_method, status,
-                                submission_ts, delegated, source_hash)
-VALUES (:uuid, :student_uuid, :uoft_uuid, :verification_level, :match_method, :status, :submission_ts, :delegated,
-        :source_hash)
-ON CONFLICT(uuid) DO UPDATE SET student_uuid = excluded.student_uuid, uoft_uuid = excluded.uoft_uuid,
-    match_method = excluded.match_method, status = excluded.status,
-    source_hash = COALESCE(excluded.source_hash, senate_application.source_hash),
-    verification_level = excluded.verification_level
+                                submission_ts, delegated)
+VALUES (:uuid, :student_uuid, :uoft_uuid, :verification_level, :match_method, :status, :submission_ts, :delegated)
 """
 
 
 def ensure_schema(conn: sqlite3.Connection):
-    ensure_tracked_table(conn, "src/schema/senate.sql", "senate_application")
+    ensure_table(conn, "src/schema/senate.sql")
 
 
-def verify_senators(csv_file: Path, cursor: sqlite3.Cursor, output_dir: Path | str = "secrets/output",
-                    reverify: bool = False):
+def verify_senators(csv_file: Path, cursor: sqlite3.Cursor, output_dir: Path | str = "secrets/output"):
     """
     Verify senate applications against uoft_data, by name, student number or both (whatever the application
-    gives). Applications are looked at once: a new one is verified. An unverified one whose row was edited is
-    processed again (that is how a correction is made); a verified one is immutable, and an edit to its row makes
-    it invalid: it stays verified but is held out of verified.csv (and so out of the seating) and raised in
-    alerts_senate.csv until a person deals with it (integrity.py). With `reverify` (after new student data)
-    everything is verified again. Per student, the newest verified application is the binding one; a newer
-    unverified one never replaces it (it becomes non-binding).
+    gives). Give the full export every time: every application in it is verified, so a correction (an edit, which
+    Google Forms stamps with a new timestamp) is just a newer submission. Per student, the newest verified
+    application is the binding one; a newer unverified one never replaces it (it becomes non-binding), and an
+    application that was verified before is never downgraded if the student data changes. The senate_application
+    table is rebuilt from the export.
     Writes verified.csv and unverified.csv (the whole export's result) to output_dir (relative paths resolve
     from the project root), and alerts_senate.csv.
     """
@@ -88,7 +79,6 @@ def verify_senators(csv_file: Path, cursor: sqlite3.Cursor, output_dir: Path | s
         csv_file = Path(csv_file)
     mapping = absfile("data/conversion_table_senate.csv")
     senators: csv.DictReader = setup_reader(csv_file, mapping, optional=OPTIONAL_FIELDS, identity=IDENTITY_FIELDS)
-    fields = mapped_names(mapping)
 
     rows = []
     for row in senators:
@@ -99,34 +89,33 @@ def verify_senators(csv_file: Path, cursor: sqlite3.Cursor, output_dir: Path | s
             continue
         app["uuid"] = application_uuid(app)
         app["student_uuid"] = student_uuid_for(app["email"], app["id"], app["full_name"])
-        app["source_hash"] = fingerprint(row, fields)
         app["flags"] = ""
         rows.append(app)
     applications = dedupe_by_uuid(rows)
 
     conn = cursor.connection
     ensure_schema(conn)
-    run = Run(conn, "senate_application", "Senate", "senate", applications, reverify)
+    run = Run(conn, "senate_application", "Senate", "senate", applications)
 
-    for app, match in zip(run.to_check, match_students(run.to_check, cursor)):
+    for app, match in zip(applications, match_students(applications, cursor)):
         app.update(uoft_uuid=match.uoft_uuid, verification_level=match.level, match_method=match.method,
                    status="verified" if match.verified else "unverified")
-        logger.log(logging.INFO if match.verified else logging.WARNING,
+    run.keep_verified()
+    for app in applications:
+        logger.log(logging.INFO if app["status"] == "verified" else logging.WARNING,
                    f"{app['status'].upper()} application {app['uuid']}")
 
     run.select()
-    conn.executemany(_UPSERT, run.to_save())
+    run.replace_all(_INSERT)
     run.settle()
 
-    # an invalid (held) application stays verified but is left out of what goes on to seating
-    verified, held = hold([a for a in run.current if a["status"] == "verified"])
+    verified = [a for a in run.current if a["status"] == "verified"]
     unverified = [a for a in run.current if a["status"] == "unverified"]
     out = Path(absfile(output_dir))
     write_results(verified, unverified, out)
     alerts = run.alert(out)
-    return {"verified": verified, "unverified": unverified, "new": run.new,
-            "changed": run.changed, "held": held, "duplicates": run.duplicates, "alerts": alerts,
-            "non_binding": [u for u, s in run.statuses.items() if s == "non_binding"]}
+    return {"verified": verified, "unverified": unverified, "duplicates": run.duplicates, "alerts": alerts,
+            "kept": run.kept, "non_binding": [u for u, s in run.statuses.items() if s == "non_binding"]}
 
 
 

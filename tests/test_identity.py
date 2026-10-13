@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from test_agm import HEADERS as AGM_HEADERS, students_db
+from test_agm import HEADERS as AGM_HEADERS, form_csv as agm_form, rsvp, students_db
 from test_sap import AP_ROW, LC_ROW, form_csv as sap_form
 from utsu_core import agm, sap, senate, verification
 from utsu_mail import campaign
@@ -223,35 +223,37 @@ def test_ids_say_what_they_identify():
     assert parse_id("plain") == ("", "plain")
 
 
-def test_a_row_is_corrected_in_place_until_it_is_verified_and_then_it_is_locked(tmp_path, caplog):
+def test_a_corrected_submission_is_a_newer_one_and_the_old_row_goes(tmp_path):
     conn = students_db(("Ann", "Lee", 3161))
-    ts = "2026/10/01 9:00:00 a.m. AST"
-    wrong = senate_file(tmp_path / "1.csv", [(ts, "Ann Lee", "1000000000", "ann@x.ca")])
+    wrong = senate_file(tmp_path / "1.csv", [("2026/10/01 9:00:00 a.m. AST", "Ann Lee", "1000000000", "ann@x.ca")])
     r1 = run_senate(wrong, conn, tmp_path)
     assert len(r1["unverified"]) == 1
-    uuid, student = r1["unverified"][0]["uuid"], r1["unverified"][0]["student_uuid"]
 
-    # an unverified application is corrected by editing its row: same ids, processed again, now verified
-    fixed = senate_file(tmp_path / "2.csv", [(ts, "Ann Lee", "1001231617", "ann@x.ca")])
+    # Google Forms stamps an edit with a new timestamp, and the export no longer has the old row
+    fixed = senate_file(tmp_path / "2.csv", [("2026/10/02 9:00:00 a.m. AST", "Ann Lee", "1001231617", "ann@x.ca")])
     r2 = run_senate(fixed, conn, tmp_path)
-    assert r2["unverified"] == [] and r2["changed"] == []
-    assert (r2["verified"][0]["uuid"], r2["verified"][0]["student_uuid"]) == (uuid, student)
-    assert r2["verified"][0]["verification_level"] == 3
+    assert r2["unverified"] == [] and r2["verified"][0]["verification_level"] == 3
+    assert r2["alerts"] == []
+    # the table holds exactly the export
+    assert conn.execute("SELECT submission_ts, status FROM senate_application").fetchall() == \
+        [("2026/10/02 9:00:00 a.m. AST", "verified")]
 
-    # from then on it is immutable: editing it again makes it invalid and held, with an alert for a person
-    broken = senate_file(tmp_path / "3.csv", [(ts, "Ann Lee", "1000000000", "ann@x.ca")])
-    with caplog.at_level(logging.ERROR):
-        r3 = run_senate(broken, conn, tmp_path)
-    assert r3["changed"] == [uuid] and r3["verified"] == [] and [a["uuid"] for a in r3["held"]] == [uuid]
-    assert r3["held"][0]["verification_level"] == 3 and r3["held"][0]["invalid_reason"]
-    assert [a["kind"] for a in r3["alerts"]] == ["invalid"]
-    assert conn.execute("SELECT status, verification_level FROM senate_application").fetchall() == [("verified", 3)]
-    assert any(r.levelname == "ERROR" and "INTEGRITY" in r.getMessage() for r in caplog.records)
-    # the alert repeats on every run until a person deals with it
-    caplog.clear()
-    with caplog.at_level(logging.ERROR):
-        r4 = run_senate(broken, conn, tmp_path)
-    assert [a["kind"] for a in r4["alerts"]] == ["invalid"] and [r.levelname for r in caplog.records] == ["ERROR"]
+
+def test_a_verified_senate_application_is_never_downgraded_but_agm_follows_the_roster(tmp_path):
+    ts = "2026/10/01 9:00:00 a.m. AST"
+    conn = students_db(("Ann", "Lee", 3161))
+    senate_form = senate_file(tmp_path / "s.csv", [(ts, "Ann Lee", "1001231617", "ann@x.ca")])
+    agm_form_file = agm_form(tmp_path / "a.csv", [rsvp(ts, "Ann", "Lee", "ann@x.ca")])
+    assert len(run_senate(senate_form, conn, tmp_path)["verified"]) == 1
+    assert len(agm.process_agm(agm_form_file, conn, output_dir=tmp_path / "agm")["verified"]) == 1
+
+    conn.execute("DELETE FROM uoft_data")  # the roster no longer has her
+    conn.commit()
+    senate_result = run_senate(senate_form, conn, tmp_path)
+    assert len(senate_result["verified"]) == 1 and senate_result["unverified"] == []
+    assert [a["kind"] for a in senate_result["alerts"]] == ["roster_mismatch"]
+    agm_result = agm.process_agm(agm_form_file, conn, output_dir=tmp_path / "agm")
+    assert agm_result["verified"] == [] and len(agm_result["unverified"]) == 1 and agm_result["alerts"] == []
 
 
 def test_a_resubmission_with_the_same_email_replaces_the_older_one_even_if_the_number_changed(tmp_path):
@@ -279,10 +281,11 @@ def test_a_newer_unverified_submission_never_replaces_a_verified_one(tmp_path, c
     assert len(r2["non_binding"]) == 1 and "non-binding" in caplog.text
     assert sorted(s for (s,) in conn.execute("SELECT status FROM senate_application")) == ["non_binding", "verified"]
 
-    # a later run does not revisit it, and the verified application is still the binding one
+    # the whole export is checked every run, so it is still non-binding, and the verified application still binding
     caplog.clear()
-    r3 = run_senate(senate_file(tmp_path / "3.csv", [good, imposter]), conn, tmp_path)
-    assert len(r3["verified"]) == 1 and r3["unverified"] == [] and "non-binding" not in caplog.text
+    with caplog.at_level(logging.WARNING):
+        r3 = run_senate(senate_file(tmp_path / "3.csv", [good, imposter]), conn, tmp_path)
+    assert len(r3["verified"]) == 1 and r3["unverified"] == [] and "non-binding" in caplog.text
 
     # a newer *verified* submission does replace it
     update = ("2026/10/12 9:00:00 a.m. AST", "Ann Lee", "1001231617", "ann@x.ca")
@@ -355,17 +358,6 @@ def test_a_division_alone_identifies_nobody(tmp_path):
     # the form has a division, but this row has neither a name nor a student number
     r = run_senate(form, conn, tmp_path)
     assert r["verified"] == []
-
-
-# ---- databases from an older version -----------------------------------------------------------------------
-
-def test_older_databases_gain_the_new_columns(tmp_path):
-    conn = sqlite3.connect(":memory:")
-    conn.executescript("CREATE TABLE agm_rsvp (uuid TEXT PRIMARY KEY, student_uuid TEXT, status TEXT NOT NULL, "
-                       "reason TEXT, match_method TEXT, submission_ts TEXT, meeting_preference TEXT, "
-                       "contact_ok TEXT, flags TEXT, import_date TIMESTAMP);")
-    agm.ensure_schema(conn)
-    assert {"uoft_uuid", "verification_level"} <= {r[1] for r in conn.execute("PRAGMA table_info(agm_rsvp)")}
 
 
 # ---- backups -----------------------------------------------------------------------------------------------

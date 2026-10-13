@@ -6,9 +6,8 @@ PRAGMA foreign_keys = ON;
 -- uoft_data.uuid (NULL when unverified); `verification_level` is the number of factors (name, student number,
 -- division) that matched: 1, 2 or 3 (the SABP form has no division, so at most 2). `status` is verified or
 -- unverified; later superseded or non_binding (see
--- senate_application). `source_hash` fingerprints the form row as it was processed. `invalid_reason` is set when a
--- verified application's row was edited after it was processed: it stays at its stage but is held (not batched,
--- reconciled or decided) until a person deals with it; NULL means valid.
+-- senate_application). The export is the full form export on every run; an application that is no longer in it (the
+-- student edited or re-submitted it, which gives a new row) is kept with its batch, ratings and decision.
 -- The decision columns are filled in later by the committee and are never overwritten by reprocessing.
 -- `stage` tracks a verified application through the process and is never moved backwards by reprocessing:
 --   scored      verified and scored, in a batch that has not been handed to reviewers
@@ -37,8 +36,6 @@ CREATE TABLE IF NOT EXISTS student_aid (
     record INTEGER,
     awarded_amount REAL,
     decision TEXT,
-    source_hash TEXT,
-    invalid_reason TEXT,
     import_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

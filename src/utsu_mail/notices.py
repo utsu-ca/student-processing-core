@@ -42,7 +42,8 @@ def diagnose(app: dict[str, str], cursor: sqlite3.Cursor) -> tuple[str, list[str
     Compare an application with uoft_data. Returns (student_uuid, details that could not be verified).
     Works with a name plus, optionally, a student number and a division. The name is blamed when it is not in
     uoft_data or missing, the student number when it does not belong to the name, the division when it does not
-    match the student, and the student number when a shared name cannot be decided without one.
+    match the student, and, when a shared name cannot be decided, the student number or the division, whichever the
+    match said is still needed.
     """
     number = (app.get("id") or app.get("student_number") or "").strip()
     name = app.get("full_name", "")
@@ -57,7 +58,10 @@ def diagnose(app: dict[str, str], cursor: sqlite3.Cursor) -> tuple[str, list[str
         fields = [DIVISION_FIELD]
     elif reason == "name not found" or reason == "no name given" or reason.startswith("name has no plain letters"):
         fields = [NAME_FIELD]
-    else:  # a student number that does not match, or a name shared by several students
+    elif "shared by" in reason:  # the name is shared: ask for what the match message says it needs
+        fields = [DIVISION_FIELD] if "a division is needed" in reason else \
+            [NUMBER_FIELD] if "a student number is needed" in reason else [NUMBER_FIELD, DIVISION_FIELD]
+    else:  # a student number that does not match
         fields = [NUMBER_FIELD]
     return student, fields
 

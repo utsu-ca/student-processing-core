@@ -4,13 +4,12 @@ import sys
 from pathlib import Path
 
 from utsu_core.importing_data import import_uoft_data
-from utsu_core.integrity import resolve_invalid
 from utsu_core.senate import verify_senators
 from utsu_core.agm import process_agm
 from utsu_core.sap import issue_batches, merge_reviews, process_sap, record_decisions
 from utsu_core.seating import run_seating
 from utsu_std.database import backup_database, get_connection
-from utsu_std.utils import absfile, setup_logging, load_and_merge_config
+from utsu_std.utils import ConfigError, absfile, setup_logging, load_and_merge_config
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +38,8 @@ def main(cfg):
             print(f"  {problem}")
         return
 
-    if cfg.get('resolve_invalid'):
-        ids = [i.strip() for i in str(cfg['resolve_invalid']).split(",") if i.strip()]
-        resolved = resolve_invalid(db, ids)
-        print(f"Released {len(resolved)} application(s) from hold; the next run takes their current form row as the "
-              f"baseline" + (f". Not held or unknown: {sorted(set(ids) - set(resolved))}" if len(resolved) < len(ids) else ""))
-        return
-
     # The student data is imported once: only when the table is missing, or on request with --reimport_uoft_data.
+    # Every run verifies the whole export against it, so new data takes effect on the next run.
     cursor = db.cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='uoft_data';")
     test = cursor.fetchone()
@@ -70,34 +63,32 @@ def main(cfg):
     else:
         logger.info("Using the UofT student data already in the database (--reimport_uoft_data replaces it).")
 
-    # new student data can change earlier outcomes, so everything is verified again after a reimport
-    reverify = reimport
-
     # Implement the main functionality here
     program = cfg.get('program', 'all')
     if program in ('senate', 'all'):
-        verify_senators(cfg['verify_student'], db.cursor(),
-                        output_dir=cfg.get('output_dir', 'secrets/output'), reverify=reverify)
-
-        seats_file = absfile(cfg.get('seats_file', 'data/seats_senate.csv'))
-        if seats_file.exists():
-            run_seating(Path(absfile(cfg.get('output_dir', 'secrets/output'))) / "verified.csv", seats_file,
-                        cfg.get('output_dir', 'secrets/output'), cfg.get('seed', 2026))
+        verify_path = Path(absfile(cfg['verify_student']))
+        if program == 'all' and not verify_path.is_file():
+            logger.warning(f"No Senate export at {verify_path}; skipping Senate verification and seating")
         else:
-            logger.warning(f"Seats file not found, skipping seating: {seats_file}")
+            verify_senators(cfg['verify_student'], db.cursor(), output_dir=cfg.get('output_dir', 'secrets/output'))
+
+            seats_file = absfile(cfg.get('seats_file', 'data/seats_senate.csv'))
+            if seats_file.exists():
+                run_seating(Path(absfile(cfg.get('output_dir', 'secrets/output'))) / "verified.csv", seats_file,
+                            cfg.get('output_dir', 'secrets/output'), cfg.get('seed', 2026))
+            else:
+                logger.warning(f"Seats file not found, skipping seating: {seats_file}")
 
     if program in ('sap', 'all'):
         if cfg.get('sap_file'):
             process_sap(cfg['sap_file'], db, output_dir=cfg.get('output_dir', 'secrets/output'),
-                        batch_size=cfg.get('batch_size', 50), reviewers=cfg.get('reviewers', ''),
-                        reverify=reverify)
+                        batch_size=cfg.get('batch_size', 50), reviewers=cfg.get('reviewers', ''))
         elif program == 'sap':
             raise ValueError("No SABP form export given; set --sap_file")
 
     if program in ('agm', 'all'):
         if cfg.get('agm_file'):
-            process_agm(cfg['agm_file'], db, output_dir=cfg.get('output_dir', 'secrets/output'),
-                        reverify=reverify)
+            process_agm(cfg['agm_file'], db, output_dir=cfg.get('output_dir', 'secrets/output'))
         elif program == 'agm':
             raise ValueError("No AGM RSVP export given; set --agm_file")
     pass
@@ -108,7 +99,7 @@ TESTING_DIR = "testing"
 PATH_KEYS = ("verify_student", "sap_file", "agm_file", "import_uoft_data", "db", "log_file", "output_dir", "seats_file",
              "record_decisions", "backup_dir")
 # one-off actions that work on the last run's database: never rebuilt in testing mode, never saved to the config
-ACTION_FLAGS = ("merge_reviews", "issue_batches", "record_decisions", "resolve_invalid")
+ACTION_FLAGS = ("merge_reviews", "issue_batches", "record_decisions")
 
 
 def resolve_paths(cfg: dict) -> dict:
@@ -185,11 +176,6 @@ if __name__ == "__main__":
                              "batch numbers like 1,2. Those batches are then never changed or added to")
     parser.add_argument("--record_decisions", default="",
                         help="CSV with uuid, decision and awarded_amount columns: record the final SABP decisions")
-    parser.add_argument("--resolve_invalid", default="",
-                        help="Comma separated ids of invalid (held) applications that a person has looked at and "
-                             "accepts: the hold is lifted and the next run takes their current form row as the baseline")
-
-    
     parser.add_argument("--db", default="secrets/db.sqlite",
                             help="Path to the database file containing student data")
 
@@ -197,8 +183,8 @@ if __name__ == "__main__":
                         help="Path to the CSV file containing student data to be parsed (imported once, when the "
                              "database has no uoft_data table)")
     parser.add_argument("--reimport_uoft_data", default=False, action="store_true",
-                        help="Replace the stored student data with --import_uoft_data and verify every application "
-                             "again")
+                        help="Replace the stored student data with --import_uoft_data (every run verifies the whole "
+                             "export against the stored data, so the next run uses the new data)")
 
     parser.add_argument("--verbosity", default="TRACE",
                         help="Set the logging verbosity level")
@@ -225,8 +211,11 @@ if __name__ == "__main__":
         args = apply_testing_mode(args, parser)
     else:
         # these flags are one-off actions: never saved to the config file
-        args = resolve_paths(load_and_merge_config(
-            args, parser, transient=(*ACTION_FLAGS, "reimport_uoft_data", "no_backup")))
+        try:
+            args = resolve_paths(load_and_merge_config(
+                args, parser, transient=(*ACTION_FLAGS, "reimport_uoft_data", "no_backup", "program")))
+        except ConfigError as e:
+            sys.exit(f"ERROR: {e}")
     setup_logging(args)
 
     main(args)

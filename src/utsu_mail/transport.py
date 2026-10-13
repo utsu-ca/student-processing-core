@@ -105,6 +105,8 @@ class SmtpSender:
             self._client = None
 
     def send(self, msg: EmailMessage):
+        if self._client is None:  # an earlier reconnect failed
+            self._connect()
         try:
             self._client.send_message(msg)
         except smtplib.SMTPServerDisconnected:
