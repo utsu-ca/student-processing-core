@@ -14,7 +14,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from utsu_core.selection import dedupe_by_uuid, parse_submission_ts
+from utsu_core.selection import add_flag, dedupe_by_uuid, parse_submission_ts
 from utsu_core.pipeline import Run, ensure_table
 from utsu_core.verification import match_students, setup_reader
 from utsu_core.wfni import compute_wfni, current_weights
@@ -143,6 +143,8 @@ def verify_applications(applications: list[dict], cursor: sqlite3.Cursor) -> Non
     for app, match in zip(applications, match_students(applications, cursor)):
         app.update(uoft_uuid=match.uoft_uuid, verification_level=match.level, match_method=match.method,
                    status="verified" if match.verified else "unverified")
+        if match.fuzzy_flag:
+            add_flag(app, match.fuzzy_flag)
 
 
 def assign_batches(verified: list[dict], batch_size: int = 50, placed: dict[str, tuple[int, int]] | None = None,
@@ -659,8 +661,8 @@ def process_sap(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
                "batches": len(batches), "batch_size": batch_size,
                "reviewers": {str(b): rs for b, rs in assignments.items()},
                "emergency": sum(a["emergency"] for a in verified),
-               "flags": {flag: sum(flag in a["flags"].split(";") for a in current)
-                         for flag in sorted({f for a in current for f in a["flags"].split(";") if f})}}
+               "flags": {flag: sum(flag in [f.partition("=")[0] for f in a["flags"].split(";")] for a in current)
+                         for flag in sorted({f.partition("=")[0] for a in current for f in a["flags"].split(";") if f})}}
     (out / "sap_run.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     logger.info(f"SABP: {len(verified)} verified, {len(unverified)} unverified, {len(batches)} batch(es) "
                 f"of up to {batch_size}")

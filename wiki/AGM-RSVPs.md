@@ -45,7 +45,8 @@ At least one of the name columns or `Student Number` must exist.
 
 | Flag | Meaning |
 |---|---|
-| `name_only_match` | matched on name alone |
+| `name_only_match` | matched on name alone (including a fuzzy name) |
+| `fuzzy_name_match=<score>` | the first name matched closely, not exactly (e.g. an undisclosed middle name); the score is the first-name similarity, 0.85 to 1.00 |
 | `ambiguous_name` | name shared by several students |
 | `no_data_confirmation` | the data-processing confirmation is not "yes..." |
 | `no_uoft_email` | no email given (such an RSVP is not verified) |
@@ -57,6 +58,7 @@ At least one of the name columns or `Student Number` must exist.
 | `agm_list_all.csv` | **Door list**: every verified attendee, sorted by last name. Columns `last_name, first_name, preferred_name, pronouns, email, meeting_preference, contact_ok, flags, verification_level, checked_in`. No ids. `checked_in` is a blank column for the door. |
 | `agm_list_in_person.csv` | The same columns, only people attending `In-person`. |
 | `agm_unverified.csv` | RSVPs that could not be verified, with `reason`. Keeps `uuid` and `student_uuid` for the "more information" emails. |
+| `agm_fuzzy_review.csv` | **Private.** For a person to reconcile: every binding RSVP whose name was not found exactly but has close roster students (same last name, similar first name). Has the RSVP, `status`, `reason`, `match_method`, `name_similarity`, then the closest three students as `match1_*`…`match3_*` (`uoft_uuid, name, student_number` (truncated), `division, similarity, selected`), where `selected` is `SELECTED` for the student the RSVP was verified as (none when it could not be decided), and empty `reviewer_decision` / `reviewer_notes` columns. |
 | `agm_accommodations.csv` | Dietary and accessibility needs of verified attendees, by `uuid` only, no names. Answers such as `None` or `N/A` are not needs and are left out (and not counted). |
 | `alerts_agm.csv` | Duplicate, ambiguous-match and non-binding RSVPs. |
 | `agm_run.json` | Counts (below). |

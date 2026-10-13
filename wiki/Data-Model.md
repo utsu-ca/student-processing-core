@@ -41,7 +41,7 @@ created again from the export on every run; `student_aid` is kept, see
 | `student_uuid` | `student:<key type>:<uuid>` |
 | `uoft_uuid` | matching `uoft_data.uuid`, NULL when unverified |
 | `verification_level` | 1 / 2 / 3 ([levels](Identity-and-Verification#verification-levels-at-a-glance)) |
-| `match_method` | `name only`, `name + student number`, `name + division`, `name + student number + division` |
+| `match_method` | `name only`, `name + student number`, `name + division`, `name + student number + division`, or the same with `fuzzy name` in place of `name` |
 | `status` | `verified`, `unverified`, `superseded`, `non_binding`, `not_considered` |
 | `submission_ts` | the form timestamp as given |
 | `import_date` | timestamp |

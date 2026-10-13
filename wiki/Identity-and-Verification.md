@@ -47,6 +47,19 @@ the number of factors that matched:
 The roster's division is its `division`, or its `faculty` when the division is
 blank, and is compared as a code (`UC - University College` is `UC`). The SABP form has no division (maximum level 2).
 
+### Fuzzy first names (undisclosed middle names)
+
+Students often leave their middle names off the form. When **no roster student has the exact name**, a second pass
+treats the **last name as correct** (the trailing words of the name, so `De La Cruz` works; it must match exactly) and
+compares only the **first names** with `first_name_similarity` (`src/utsu_core/verification.py`): the first parts must
+be alike (a `difflib` ratio of at least `FUZZY_THRESHOLD`, 0.85, so `Jon` ≈ `John`), and the extra parts of the shorter
+name must be found, whole or as an initial, in the longer one (`Ann` ≈ `Ann Marie`, `Ann M` ≈ `Ann Marie`, but not
+`Ann Lynn` ≈ `Ann Marie`). The students that pass are decided exactly like exact matches (student number and
+division must still agree; several students left means ambiguous). The factor is then called `fuzzy name`
+(`fuzzy name`, `fuzzy name + student number`, ...), the level is unchanged, and the application gets the flag
+`fuzzy_name_match=<similarity>` (for example `fuzzy_name_match=0.86`). In AGM, the closest three students are written to
+`agm_fuzzy_review.csv` for a person to reconcile (see [AGM RSVPs](AGM-RSVPs)).
+
 Reasons an application stays `unverified`:
 
 | Reason | Meaning |

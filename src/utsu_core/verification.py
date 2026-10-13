@@ -1,7 +1,9 @@
 import csv
 import logging
+import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from difflib import SequenceMatcher
 from pathlib import Path
 
 from utsu_std.csv_safe import open_csv
@@ -12,20 +14,82 @@ logger = logging.getLogger(__name__)
 
 
 METHOD_NAME = "name only"
+METHOD_FUZZY_NAME = "fuzzy name"
+FUZZY_FLAG = "fuzzy_name_match"
 _CHUNK = 300
+_SQL_VARIABLES = 500
+MAX_CANDIDATES = 3
+# how alike two first names have to be (0 to 1, `difflib` ratio) to be taken as the same name
+FUZZY_THRESHOLD = 0.85
+
+
+def _name_parts(first_name: str) -> list[str]:
+    return [part for part in re.split(r"[\s-]+", first_name.lower()) if part]
+
+
+def _part_similarity(a: str, b: str) -> float:
+    if len(a) == 1 or len(b) == 1:  # an initial stands for the whole name
+        return 1.0 if a[0] == b[0] else 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
+def first_name_similarity(given: str, roster: str) -> float:
+    """
+    How alike a first name written on a form and a roster first name are, from 0 to 1; 0 when they are not the same
+    name (below `FUZZY_THRESHOLD`). Students often leave out their middle names, so the first names only have to
+    agree on their first part (allowing a small typo); when both have more parts, each part of the shorter name
+    must be found, as a whole or as an initial, in the longer one. The score is that of the weakest part compared.
+
+    >>> [first_name_similarity(*n) for n in (("Ann", "Ann Marie"), ("Ann Marie", "Ann"), ("Ann M", "Ann Marie"))]
+    [1.0, 1.0, 1.0]
+    >>> round(first_name_similarity("Jon", "John"), 2), first_name_similarity("Mary-Jane", "Mary Jane")
+    (0.86, 1.0)
+    >>> [first_name_similarity(*n) for n in (("Ann Lynn", "Ann Marie"), ("Bo", "Ann"), ("", "Ann"))]
+    [0.0, 0.0, 0.0]
+    """
+    a, b = _name_parts(given), _name_parts(roster)
+    if not a or not b:
+        return 0.0
+    shorter, longer = sorted((a[1:], b[1:]), key=len)
+    scores = [_part_similarity(a[0], b[0])]
+    for part in shorter:
+        scores.append(max(_part_similarity(part, other) for other in longer) if longer else 0.0)
+    score = min(scores)
+    return round(score, 2) if score >= FUZZY_THRESHOLD else 0.0
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """A roster student whose name is close to a name that was not found exactly."""
+    uoft_uuid: str
+    full_name: str
+    student_number: str  # truncated, as on the roster: xxxxx3971x
+    division: str
+    similarity: float
 
 
 @dataclass(frozen=True)
 class Match:
-    """The outcome of checking one person against uoft_data."""
+    """
+    The outcome of checking one person against uoft_data. `similarity` is set only when the first name was matched
+    by `first_name_similarity` rather than exactly; `candidates` are then the closest roster students (best first),
+    which include the one matched, and are also given when the fuzzy match could not be decided.
+    """
     uoft_uuid: str | None
     level: int | None
     method: str
     reason: str
+    similarity: float | None = None
+    candidates: tuple[Candidate, ...] = ()
 
     @property
     def verified(self) -> bool:
         return self.uoft_uuid is not None
+
+    @property
+    def fuzzy_flag(self) -> str:
+        """The review flag for a fuzzy verification, `fuzzy_name_match=0.86`; empty for any other outcome."""
+        return f"{FUZZY_FLAG}={self.similarity:.2f}" if self.verified and self.similarity is not None else ""
 
 
 def division_of(text: str) -> str:
@@ -38,7 +102,8 @@ def division_of(text: str) -> str:
     return division_code(clean_text(text))
 
 
-def decide(name: str, number: str, division: str, by_name: list[tuple[str, int, str]]) -> Match:
+def decide(name: str, number: str, division: str, by_name: list[tuple[str, int, str]],
+           similarity: dict[str, float] | None = None) -> Match:
     """
     Decide one person from the roster rows sharing their name (each a (uoft_data.uuid, trunc_id, division code)
     tuple). A name is always needed: the roster only has the last four digits of a student number, which many
@@ -52,14 +117,20 @@ def decide(name: str, number: str, division: str, by_name: list[tuple[str, int, 
     A roster student's division is their college or division, or their faculty when they have none (see
     `match_students`); a student with neither never matches a given division.
 
+    `similarity` is given when the rows are not an exact name match but students whose last name agrees and whose
+    first name is close (see `first_name_similarity`; it maps each row's uuid to its score). The factors are the
+    same, but the name factor is `fuzzy name` and the match carries the similarity of the student it settled on.
+
     >>> decide("Ann Lee", "1001231617", "", [("u1", 3161, "UC")])
-    Match(uoft_uuid='u1', level=2, method='name + student number', reason='')
+    Match(uoft_uuid='u1', level=2, method='name + student number', reason='', similarity=None, candidates=())
     >>> decide("Ann Lee", "1001231617", "UC", [("u1", 3161, "UC")]).level
     3
     >>> decide("Ann Lee", "", "", [("u1", 3161, "UC")])
-    Match(uoft_uuid='u1', level=1, method='name only', reason='')
+    Match(uoft_uuid='u1', level=1, method='name only', reason='', similarity=None, candidates=())
     >>> decide("Sam Lee", "", "TRIN", [("u1", 1, "UC"), ("u2", 2, "TRIN")])
-    Match(uoft_uuid='u2', level=2, method='name + division', reason='')
+    Match(uoft_uuid='u2', level=2, method='name + division', reason='', similarity=None, candidates=())
+    >>> decide("Ann Lee", "1001231617", "", [("u1", 3161, "UC")], {"u1": 0.92})
+    Match(uoft_uuid='u1', level=2, method='fuzzy name + student number', reason='', similarity=0.92, candidates=())
     >>> decide("Ann Lee", "", "TRIN", [("u1", 3161, "UC")]).reason
     'division does not match'
     >>> decide("Ann Lee", "1001231617", "TRIN", [("u1", 3161, "UC")]).reason
@@ -94,8 +165,16 @@ def decide(name: str, number: str, division: str, by_name: list[tuple[str, int, 
         return Match(None, None, "", f"{what} shared by {len(candidates)} students{within}; {need} is needed")
 
     # exactly one student is left; the more things that agreed, the higher the level
-    factors = ["name"] + ["student number"] * bool(number) + ["division"] * bool(division)
-    return Match(candidates[0][0], len(factors), " + ".join(factors) if len(factors) > 1 else METHOD_NAME, "")
+    fuzzy = similarity is not None
+    factors = ["fuzzy name" if fuzzy else "name"] + ["student number"] * bool(number) + ["division"] * bool(division)
+    method = " + ".join(factors) if len(factors) > 1 else METHOD_FUZZY_NAME if fuzzy else METHOD_NAME
+    return Match(candidates[0][0], len(factors), method, "", similarity[candidates[0][0]] if fuzzy else None)
+
+
+def _name_splits(name: str) -> list[tuple[str, str]]:
+    """Every way to read a full name as (first names, last name): the last name is one or more trailing words."""
+    words = name.split()
+    return [(" ".join(words[:k]), " ".join(words[k:])) for k in range(1, len(words))]
 
 
 def match_students(people: list[dict], cursor: sqlite3.Cursor, name_key: str = "full_name",
@@ -104,6 +183,12 @@ def match_students(people: list[dict], cursor: sqlite3.Cursor, name_key: str = "
     Check each person against uoft_data and return one Match per person, in the same order. A person must give a
     name; a student number and a division are optional (see `decide`). Database errors are raised, never reported
     as "not found".
+
+    A name that no roster student has exactly gets a fuzzy second pass, because students often leave out their
+    middle names: the last name has to agree exactly (it is taken to be the trailing words of the name, as
+    roster last names can have several), and the first names have to be alike (see `first_name_similarity`).
+    The students that pass are decided like exact matches (see `decide`); the best `MAX_CANDIDATES` of them are
+    kept on the Match, whatever the outcome.
     """
     results: list[Match] = []
     for start in range(0, len(people), _CHUNK):
@@ -113,22 +198,52 @@ def match_students(people: list[dict], cursor: sqlite3.Cursor, name_key: str = "
         divisions = [division_of(p.get(division_key) or "") for p in chunk]
         wanted_names = sorted({n for n in names if n})
 
+        def roster_division(division, faculty):
+            # a student's division is their college or division; a student with none belongs to their faculty
+            # (the Senate form's division codes are colleges and faculties, as in the seats table)
+            return division_of(division or "") or division_of(faculty or "")
+
         by_name: dict[str, list[tuple[str, int, str]]] = {}
         if wanted_names:
             cursor.execute(f"SELECT uuid, trunc_id, full_name, division, faculty FROM uoft_data "
                            f"WHERE full_name IN ({','.join('?' * len(wanted_names))})", wanted_names)
-            for uoft_uuid, trunc_id, full_name, roster_division, roster_faculty in cursor.fetchall():
-                # a student's division is their college or division; a student with none belongs to their faculty
-                # (the Senate form's division codes are colleges and faculties, as in the seats table)
-                row = (uoft_uuid, trunc_id, division_of(roster_division or "") or division_of(roster_faculty or ""))
-                by_name.setdefault(full_name, []).append(row)
+            for uoft_uuid, trunc_id, full_name, division, faculty in cursor.fetchall():
+                by_name.setdefault(full_name, []).append((uoft_uuid, trunc_id, roster_division(division, faculty)))
+
+        # students whose last name could be the end of a name that was not found, for the fuzzy pass
+        last_names = sorted({last for n in wanted_names if n not in by_name for _, last in _name_splits(n)})
+        by_last: dict[str, list[tuple]] = {}
+        for i in range(0, len(last_names), _SQL_VARIABLES):
+            part = last_names[i:i + _SQL_VARIABLES]
+            cursor.execute(f"SELECT uuid, trunc_id, first_name, last_name, division, faculty FROM uoft_data "
+                           f"WHERE last_name IN ({','.join('?' * len(part))})", part)
+            for uoft_uuid, trunc_id, first_name, last_name, division, faculty in cursor.fetchall():
+                by_last.setdefault(last_name, []).append(
+                    (uoft_uuid, trunc_id, first_name, last_name, roster_division(division, faculty)))
 
         for raw, name, number, division in zip(chunk, names, numbers, divisions):
             if not name and str(raw.get(name_key) or "").strip():
                 # a name was given, and nothing of it is plain ASCII (e.g. another script)
                 results.append(Match(None, None, "", "name has no plain letters (only A-Z letters are supported)"))
                 continue
-            results.append(decide(name, number, division, by_name.get(name, [])))
+            if name in by_name or not name:
+                results.append(decide(name, number, division, by_name.get(name, [])))
+                continue
+            scored = []
+            for given, last in _name_splits(name):
+                for uoft_uuid, trunc_id, first_name, last_name, roster_div in by_last.get(last, []):
+                    score = first_name_similarity(given, first_name)
+                    if score:
+                        scored.append((score, uoft_uuid, trunc_id, first_name, last_name, roster_div))
+            if not scored:
+                results.append(decide(name, number, division, []))
+                continue
+            scored.sort(key=lambda s: (-s[0], s[3], s[1]))
+            match = decide(name, number, division, [(u, t, d) for _, u, t, _, _, d in scored],
+                           {u: score for score, u, *_ in scored})
+            candidates = tuple(Candidate(u, f"{first} {last}", f"xxxxx{t:04d}x", d, score)
+                               for score, u, t, first, last, d in scored[:MAX_CANDIDATES])
+            results.append(replace(match, candidates=candidates))
     return results
 
 

@@ -4,7 +4,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from utsu_core.selection import dedupe_by_uuid
+from utsu_core.selection import add_flag, dedupe_by_uuid
 from utsu_core.pipeline import Run, ensure_table
 from utsu_core.verification import match_students, setup_reader
 from utsu_std.csv_safe import write_rows
@@ -100,6 +100,8 @@ def verify_senators(csv_file: Path, cursor: sqlite3.Cursor, output_dir: Path | s
     for app, match in zip(applications, match_students(applications, cursor)):
         app.update(uoft_uuid=match.uoft_uuid, verification_level=match.level, match_method=match.method,
                    status="verified" if match.verified else "unverified")
+        if match.fuzzy_flag:
+            add_flag(app, match.fuzzy_flag)
     run.keep_verified()
     for app in applications:
         logger.log(logging.INFO if app["status"] == "verified" else logging.WARNING,

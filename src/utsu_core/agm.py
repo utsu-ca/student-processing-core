@@ -24,7 +24,8 @@ from pathlib import Path
 
 from utsu_core.selection import dedupe_by_uuid, select_current
 from utsu_core.pipeline import Run
-from utsu_core.verification import METHOD_NAME, Match, match_students, setup_reader
+from utsu_core.verification import (MAX_CANDIDATES, METHOD_FUZZY_NAME, METHOD_NAME, Match, match_students,
+                                    setup_reader)
 from utsu_std.csv_safe import check_writable, write_rows
 from utsu_std.utils import absfile, application_uuid_for, normalize_case, student_uuid_for
 
@@ -37,6 +38,11 @@ UNVERIFIED_FIELDS = ["uuid", "student_uuid", "reason", "submission_ts", "full_na
 ACCOMMODATION_FIELDS = ["uuid", "meeting_preference", "dietary", "accessibility"]
 REPORT_FIELDS = ["uuid", "status", "reason", "match_method", "verification_level", "student_uuid", "uoft_uuid",
                  "full_name", "email", "flags"]
+FUZZY_REVIEW_FIELDS = (["uuid", "status", "reason", "submission_ts", "full_name", "student_number", "division", "email",
+                        "match_method", "verification_level", "name_similarity", "uoft_uuid", "flags"]
+                       + [f"match{i}_{field}" for i in range(1, MAX_CANDIDATES + 1)
+                          for field in ("uoft_uuid", "name", "student_number", "division", "similarity", "selected")]
+                       + ["reviewer_decision", "reviewer_notes"])
 # the form needs a name column; "Student Number" and "Division" are optional and only narrow a match
 IDENTITY_COLUMNS = ("first_name", "last_name")
 UOFT_EMAIL_DOMAIN = "mail.utoronto.ca"
@@ -96,10 +102,12 @@ def is_ambiguous(reason: str) -> bool:
     return "shared by" in (reason or "")
 
 
-def review_flags(rsvp: dict, match_method: str, reason: str) -> str:
+def review_flags(rsvp: dict, match_method: str, reason: str, fuzzy_flag: str = "") -> str:
     flags = []
-    if match_method == METHOD_NAME:
+    if match_method in (METHOD_NAME, METHOD_FUZZY_NAME):
         flags.append("name_only_match")
+    if fuzzy_flag:
+        flags.append(fuzzy_flag)
     if is_ambiguous(reason):
         flags.append("ambiguous_name")
     if not is_yes(rsvp.get("data_confirmation", "")):
@@ -121,7 +129,8 @@ def verify_rsvps(rsvps: list[dict], cursor: sqlite3.Cursor) -> tuple[list[dict],
             match = Match(None, None, "", EMAIL_REASON)
         rsvp.update(uoft_uuid=match.uoft_uuid, verification_level=match.level, match_method=match.method,
                     reason=match.reason, status="verified" if match.verified else "unverified",
-                    flags=review_flags(rsvp, match.method, match.reason))
+                    flags=review_flags(rsvp, match.method, match.reason, match.fuzzy_flag),
+                    name_candidates=match.candidates, name_similarity=match.similarity)
         (verified if match.verified else unverified).append(rsvp)
         if not match.verified:
             logger.warning(f"UNVERIFIED AGM RSVP {rsvp['uuid']}: {match.reason}")
@@ -223,12 +232,42 @@ def _tally(values) -> dict[str, int]:
     return dict(sorted(counts.items()))
 
 
+def fuzzy_review_rows(rsvps: list[dict]) -> list[dict]:
+    """
+    One row per RSVP whose name was not found exactly but has close roster students (see `match_students`), for a
+    person to reconcile: the RSVP, how it was decided, and its closest students (up to `MAX_CANDIDATES`, best
+    first) with `selected` marking the one it was verified as. An RSVP that could not be decided has none selected.
+    The last two columns are left empty for the reviewer.
+
+    >>> from utsu_core.verification import Candidate
+    >>> c = Candidate("u1", "Ann Marie Lee", "xxxxx3161x", "UC", 1.0)
+    >>> row, = fuzzy_review_rows([{"uuid": "a", "uoft_uuid": "u1", "name_candidates": (c,), "status": "verified"}])
+    >>> row["match1_name"], row["match1_selected"], row["match2_name"], row["reviewer_decision"]
+    ('Ann Marie Lee', 'SELECTED', '', '')
+    """
+    rows = []
+    for rsvp in rsvps:
+        if not rsvp.get("name_candidates"):
+            continue
+        row = {field: rsvp.get(field, "") for field in FUZZY_REVIEW_FIELDS}
+        row["name_similarity"] = "" if rsvp.get("name_similarity") is None else f"{rsvp['name_similarity']:.2f}"
+        for i, c in enumerate(rsvp["name_candidates"], start=1):
+            row.update({f"match{i}_uoft_uuid": c.uoft_uuid, f"match{i}_name": c.full_name,
+                        f"match{i}_student_number": c.student_number, f"match{i}_division": c.division,
+                        f"match{i}_similarity": f"{c.similarity:.2f}",
+                        f"match{i}_selected": "SELECTED" if c.uoft_uuid == rsvp.get("uoft_uuid") else ""})
+        rows.append(row)
+    return rows
+
+
 def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path | str = "secrets/output") -> dict:
     """
     Process an AGM voter RSVP export and write, under output_dir:
       agm_list_all.csv        every verified attendee (door list; no ids; meeting preference as In-person / Virtual)
       agm_list_in_person.csv  verified attendees whose meeting preference is in person
       agm_unverified.csv      RSVPs that could not be verified, with the reason
+      agm_fuzzy_review.csv    RSVPs matched (or nearly) on a close rather than exact first name, with the closest
+                              students, for a person to reconcile
       agm_accommodations.csv  dietary and accessibility needs of verified attendees, by uuid only (no names)
       alerts_agm.csv          what a person has to look at (duplicate, ambiguous, non-binding RSVPs)
       agm_run.json            counts
@@ -244,7 +283,8 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     out = Path(absfile(output_dir))
     out.mkdir(parents=True, exist_ok=True)
     files = {name: out / name for name in ("agm_list_all.csv", "agm_list_in_person.csv", "agm_unverified.csv",
-                                            "agm_accommodations.csv", "alerts_agm.csv", "agm_run.json")}
+                                            "agm_fuzzy_review.csv", "agm_accommodations.csv", "alerts_agm.csv",
+                                            "agm_run.json")}
     check_writable(*files.values())  # before anything changes: a file open in Excel stops the run here
 
     rsvps = read_rsvps(Path(csv_file))
@@ -264,6 +304,8 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     write_csv(everyone, LIST_FIELDS, files["agm_list_all.csv"])
     write_csv(in_person, LIST_FIELDS, files["agm_list_in_person.csv"])
     write_csv(unverified, UNVERIFIED_FIELDS, files["agm_unverified.csv"])
+    fuzzy_rows = fuzzy_review_rows(run.current)
+    write_rows(files["agm_fuzzy_review.csv"], FUZZY_REVIEW_FIELDS, fuzzy_rows)
     write_csv(with_needs, ACCOMMODATION_FIELDS, files["agm_accommodations.csv"])
     # an RSVP that more than one student fits cannot be verified: raise it for a person, every run until resolved
     ambiguous = [r for r in unverified if is_ambiguous(r.get("reason", ""))]
@@ -278,7 +320,8 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
                "unverified_reasons": _tally(r["reason"] for r in unverified),
                "dietary_requests": sum(bool(r["dietary"]) for r in with_needs),
                "accessibility_requests": sum(bool(r["accessibility"]) for r in with_needs),
-               "flags": _tally(f for r in run.current for f in (r.get("flags") or "").split(";") if f)}
+               "fuzzy_name_reviews": len(fuzzy_rows),
+               "flags": _tally(f.partition("=")[0] for r in run.current for f in (r.get("flags") or "").split(";") if f)}
     files["agm_run.json"].write_text(json.dumps(summary, indent=2), encoding="utf-8")
     logger.info(f"AGM: {len(verified)} verified ({len(in_person)} in person), {len(unverified)} unverified")
     return {"verified": verified, "in_person": in_person, "unverified": unverified, "alerts": alerts,
