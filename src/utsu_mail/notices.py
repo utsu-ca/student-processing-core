@@ -23,6 +23,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
+from utsu_core.agm import is_uoft_email
 from utsu_core.verification import match_students
 from utsu_mail.recipients import read_csv
 from utsu_std.csv_safe import write_rows
@@ -35,20 +36,24 @@ KINDS = ("more_info", "rejection")
 NAME_FIELD = "- Full name (exactly as it appears on your ACORN registration)"
 NUMBER_FIELD = "- Student number"
 DIVISION_FIELD = "- Division (as it appears on your ACORN registration)"
+EMAIL_FIELD = "- UofT email address (it must end in @mail.utoronto.ca)"
 
 
-def diagnose(app: dict[str, str], cursor: sqlite3.Cursor) -> tuple[str, list[str]]:
+def diagnose(app: dict[str, str], cursor: sqlite3.Cursor, program: str = "") -> tuple[str, list[str]]:
     """
     Compare an application with uoft_data. Returns (student_uuid, details that could not be verified).
     Works with a name plus, optionally, a student number and a division. The name is blamed when it is not in
     uoft_data or missing, the student number when it does not belong to the name, the division when it does not
     match the student, and, when a shared name cannot be decided, the student number or the division, whichever the
-    match said is still needed.
+    match said is still needed. For `agm`, an email that is not `@mail.utoronto.ca` is blamed first, as in
+    `agm.verify_rsvps`.
     """
     number = (app.get("id") or app.get("student_number") or "").strip()
     name = app.get("full_name", "")
     division = app.get("division", "")
     student = student_uuid_for(app.get("email", ""), number, name)
+    if program == "agm" and not is_uoft_email(app.get("email", "")):
+        return student, [EMAIL_FIELD]
     match = match_students([{"full_name": name, "id": number, "division": division}], cursor)[0]
     if match.verified:
         return student, []
@@ -67,10 +72,10 @@ def diagnose(app: dict[str, str], cursor: sqlite3.Cursor) -> tuple[str, list[str
 
 
 def build_notices(rows: list[dict[str, str]], cursor: sqlite3.Cursor, kind: str,
-                  reason: str = "") -> list[dict[str, str]]:
+                  reason: str = "", program: str = "") -> list[dict[str, str]]:
     notices = []
     for row in rows:
-        student_uuid, fields = diagnose(row, cursor)
+        student_uuid, fields = diagnose(row, cursor, program)
         notice = dict(row, application_uuid=row.get("uuid", ""), student_uuid=student_uuid)
         if kind == "more_info":
             if not fields:
@@ -122,7 +127,7 @@ def main(argv=None) -> int:
 
     conn = sqlite3.connect(f"{absfile(db).resolve().as_uri()}?mode=ro", uri=True)
     try:
-        notices = build_notices(rows, conn.cursor(), args.kind, args.reason)
+        notices = build_notices(rows, conn.cursor(), args.kind, args.reason, args.program)
     finally:
         conn.close()
 

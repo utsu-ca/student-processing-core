@@ -59,7 +59,24 @@ def parse_submission_ts(value: str) -> datetime | None:
     if not m:
         return None
     date, time, meridiem = m.groups()
-    return datetime.strptime(f"{date} {time} {meridiem.upper()}M", "%Y/%m/%d %I:%M:%S %p")
+    try:
+        return datetime.strptime(f"{date} {time} {meridiem.upper()}M", "%Y/%m/%d %I:%M:%S %p")
+    except ValueError:  # an hour such as 0 or 13 with a.m./p.m., or an impossible date
+        return None
+
+
+def warn_unreadable_timestamps(rows: list[dict], label: str) -> int:
+    """
+    Warn when submission timestamps cannot be read. They decide which of a person's submissions is the newest; for an
+    unreadable one the order in the file decides instead (the form appends new responses at the end). Returns how many.
+    """
+    bad = [row for row in rows if parse_submission_ts(row.get("submission_ts", "")) is None]
+    if bad:
+        examples = ", ".join(repr(row.get("submission_ts", "")) for row in bad[:3])
+        logger.warning(f"{len(bad)} of {len(rows)} {label} submissions have a timestamp that could not be read "
+                       f"(for example {examples}); for those, the order in the file decides which is the newest. "
+                       f"Expected a form timestamp such as '2026/08/14 1:30:47 p.m. AST'.")
+    return len(bad)
 
 
 def submission_rank(row: dict) -> datetime:

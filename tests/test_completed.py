@@ -107,6 +107,6 @@ def test_the_alerts_file_lists_what_a_person_has_to_look_at(tmp_path):
     done = sap.process_sap(form_csv(tmp_path / "1.csv", [FALL_1]), conn, output_dir=out)["verified"][0]["uuid"]
     decide(conn, tmp_path, done)
     sap.process_sap(form_csv(tmp_path / "2.csv", [FALL_1, FALL_2]), conn, output_dir=out)
-    alerts = list(csv.DictReader(open(out / "alerts_sap.csv", encoding="utf-8")))
+    alerts = list(csv.DictReader(open(out / "alerts_sap.csv", encoding="utf-8-sig")))
     assert [(a["severity"], a["kind"], a["program"]) for a in alerts] == [("WARNING", "not_considered", "SABP")]
     assert alerts[0]["uuid"].startswith("application:sap:") and alerts[0]["student_uuid"].startswith("student:email:")

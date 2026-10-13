@@ -23,9 +23,9 @@ import sqlite3
 from pathlib import Path
 
 from utsu_core.selection import dedupe_by_uuid, select_current
-from utsu_core.pipeline import Run, ensure_table
-from utsu_core.verification import METHOD_NAME, match_students, setup_reader
-from utsu_std.csv_safe import write_rows
+from utsu_core.pipeline import Run
+from utsu_core.verification import METHOD_NAME, Match, match_students, setup_reader
+from utsu_std.csv_safe import check_writable, write_rows
 from utsu_std.utils import absfile, application_uuid_for, normalize_case, student_uuid_for
 
 logger = logging.getLogger(__name__)
@@ -39,6 +39,35 @@ REPORT_FIELDS = ["uuid", "status", "reason", "match_method", "verification_level
                  "full_name", "email", "flags"]
 # the form needs a name column; "Student Number" and "Division" are optional and only narrow a match
 IDENTITY_COLUMNS = ("first_name", "last_name")
+UOFT_EMAIL_DOMAIN = "mail.utoronto.ca"
+EMAIL_REASON = f"email is not a {UOFT_EMAIL_DOMAIN} address"
+# answers to the dietary and accessibility questions that say there is nothing to accommodate
+NO_NEED = {"", "none", "n/a", "na", "no", "nil", "nothing", "not applicable", "no restrictions", "no restriction",
+           "none at this time", "no allergies", "no dietary restrictions", "no accessibility requirements"}
+
+
+def is_uoft_email(email: str) -> bool:
+    """
+    Whether an address is a UofT student email: only `@mail.utoronto.ca` counts (case and surrounding spaces are
+    ignored). A blank address, another domain (even `@utoronto.ca`) or text that is not an address does not.
+
+    >>> [is_uoft_email(v) for v in ("ann.lee@mail.utoronto.ca", " Ann@MAIL.UTORONTO.CA ", "ann@utoronto.ca",
+    ...                             "ann@gmail.com", "", None, "@mail.utoronto.ca", "a b@mail.utoronto.ca")]
+    [True, True, False, False, False, False, False, False]
+    """
+    local, _, domain = (email or "").strip().lower().rpartition("@")
+    return bool(local) and domain == UOFT_EMAIL_DOMAIN and not re.search(r"[\s@]", local)
+
+
+def real_need(answer: str) -> str:
+    """
+    The answer to a dietary or accessibility question, or '' when it only says there is no need ("None", "N/A", ...).
+
+    >>> real_need("None"), real_need(" N/A. "), real_need("n.a."), real_need("Vegan"), real_need("No gluten")
+    ('', '', '', 'Vegan', 'No gluten')
+    """
+    text = (answer or "").strip()
+    return "" if re.sub(r"[^a-z/ ]", "", text.lower()).strip() in NO_NEED else text
 
 
 def agm_uuid(rsvp: dict[str, str]) -> str:
@@ -84,9 +113,12 @@ def verify_rsvps(rsvps: list[dict], cursor: sqlite3.Cursor) -> tuple[list[dict],
     """
     Verify RSVPs (one per person) against uoft_data, by name, student number or both. Sets uoft_uuid,
     verification_level, match_method, reason, status and flags on each and returns (verified, unverified).
+    An RSVP whose email is not a `@mail.utoronto.ca` address (or is blank) is never verified.
     """
     verified, unverified = [], []
     for rsvp, match in zip(rsvps, match_students(rsvps, cursor, id_key="student_number")):
+        if not is_uoft_email(rsvp.get("email")):
+            match = Match(None, None, "", EMAIL_REASON)
         rsvp.update(uoft_uuid=match.uoft_uuid, verification_level=match.level, match_method=match.method,
                     reason=match.reason, status="verified" if match.verified else "unverified",
                     flags=review_flags(rsvp, match.method, match.reason))
@@ -179,10 +211,6 @@ VALUES (:uuid, :student_uuid, :uoft_uuid, :verification_level, :status, :reason,
 """
 
 
-def ensure_schema(conn: sqlite3.Connection):
-    ensure_table(conn, "src/schema/agm.sql")
-
-
 def write_csv(rows: list[dict], fields: list[str], path: Path):
     """Write rows to a CSV, with the meeting preference shown simply as In-person / Virtual."""
     write_rows(path, fields, [{**r, "meeting_preference": attendance(r.get("meeting_preference", ""))} for r in rows])
@@ -207,29 +235,36 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     The lists carry names and emails and are private. The agm_rsvp table is rebuilt from the export.
 
     Give the full export each time. Every RSVP in it is verified against the current student data (the status
-    follows the student data, so it can change when the data is re-imported). An edit or a re-submission is a newer
+    follows the student data, so it can change when the data is re-imported). Only a `@mail.utoronto.ca` email counts:
+    an RSVP with another or no email is unverified. An edit or a re-submission is a newer
     RSVP: per person, the newest verified RSVP is the binding one; a newer unverified one never replaces it (it
-    becomes non-binding). The lists always cover the whole export.
+    becomes non-binding). The lists always cover the whole export. Every output file is checked to be writable
+    before anything is changed, and the agm_rsvp table is dropped and created again in one transaction.
     """
     out = Path(absfile(output_dir))
     out.mkdir(parents=True, exist_ok=True)
+    files = {name: out / name for name in ("agm_list_all.csv", "agm_list_in_person.csv", "agm_unverified.csv",
+                                            "agm_accommodations.csv", "alerts_agm.csv", "agm_run.json")}
+    check_writable(*files.values())  # before anything changes: a file open in Excel stops the run here
 
     rsvps = read_rsvps(Path(csv_file))
-    ensure_schema(conn)
     run = Run(conn, "agm_rsvp", "AGM", "agm", rsvps, sticky=False)
     verify_rsvps(rsvps, conn.cursor())
     run.select()
     unverified = [r for r in run.current if r["status"] == "unverified"]
 
-    run.replace_all(_INSERT)
+    run.replace_all(_INSERT, "src/schema/agm.sql")
     run.settle()
     verified = [r for r in run.current if r["status"] == "verified"]
     everyone, in_person = attendee_list(verified), attendee_list(verified, in_person_only=True)
-    write_csv(everyone, LIST_FIELDS, out / "agm_list_all.csv")
-    write_csv(in_person, LIST_FIELDS, out / "agm_list_in_person.csv")
-    write_csv(unverified, UNVERIFIED_FIELDS, out / "agm_unverified.csv")
-    write_csv([r for r in everyone if r.get("dietary") or r.get("accessibility")], ACCOMMODATION_FIELDS,
-              out / "agm_accommodations.csv")
+    # an answer such as "None" or "N/A" is not a need
+    with_needs = [{**r, "dietary": real_need(r.get("dietary")), "accessibility": real_need(r.get("accessibility"))}
+                  for r in everyone]
+    with_needs = [r for r in with_needs if r["dietary"] or r["accessibility"]]
+    write_csv(everyone, LIST_FIELDS, files["agm_list_all.csv"])
+    write_csv(in_person, LIST_FIELDS, files["agm_list_in_person.csv"])
+    write_csv(unverified, UNVERIFIED_FIELDS, files["agm_unverified.csv"])
+    write_csv(with_needs, ACCOMMODATION_FIELDS, files["agm_accommodations.csv"])
     # an RSVP that more than one student fits cannot be verified: raise it for a person, every run until resolved
     ambiguous = [r for r in unverified if is_ambiguous(r.get("reason", ""))]
     alerts = run.alert(out, ambiguous)
@@ -241,10 +276,10 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
                "attendance": _tally(attendance(r.get("meeting_preference", "")) for r in verified),
                "match_method": _tally(r["match_method"] for r in verified),
                "unverified_reasons": _tally(r["reason"] for r in unverified),
-               "dietary_requests": sum(bool(r.get("dietary")) for r in verified),
-               "accessibility_requests": sum(bool(r.get("accessibility")) for r in verified),
+               "dietary_requests": sum(bool(r["dietary"]) for r in with_needs),
+               "accessibility_requests": sum(bool(r["accessibility"]) for r in with_needs),
                "flags": _tally(f for r in run.current for f in (r.get("flags") or "").split(";") if f)}
-    (out / "agm_run.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    files["agm_run.json"].write_text(json.dumps(summary, indent=2), encoding="utf-8")
     logger.info(f"AGM: {len(verified)} verified ({len(in_person)} in person), {len(unverified)} unverified")
     return {"verified": verified, "in_person": in_person, "unverified": unverified, "alerts": alerts,
             "ambiguous": ambiguous, "summary": summary}

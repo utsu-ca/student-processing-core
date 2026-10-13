@@ -15,6 +15,36 @@ def get_connection(filepath : Path):
     return sqlite3.connect(path)
 
 
+def split_statements(script: str) -> list[str]:
+    """The SQL statements of a script, so they can run inside one transaction (PRAGMAs are left out)."""
+    statements, buffer = [], ""
+    for line in script.splitlines(keepends=True):
+        buffer += line
+        if sqlite3.complete_statement(buffer):
+            if not buffer.strip().upper().startswith("PRAGMA"):
+                statements.append(buffer.strip())
+            buffer = ""
+    return statements
+
+
+def replace_table(conn: sqlite3.Connection, table: str, schema_script: str, insert: str, rows: list[dict]) -> None:
+    """
+    Drop a table, create it again from its schema and insert `rows`, as one transaction: if anything fails the
+    previous table is as it was. A table that is rebuilt on every run is never left in the shape of an older version.
+    """
+    conn.commit()
+    try:
+        conn.execute("BEGIN")
+        conn.execute(f"DROP TABLE IF EXISTS {table}")
+        for statement in split_statements(schema_script):
+            conn.execute(statement)
+        conn.executemany(insert, rows)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 def backup_database(db_path: Path | str, backup_dir: Path | str | None = None, keep: int = 0) -> Path | None:
     """
     Copy the database to `<backup_dir>/<name>_<YYYYmmdd-HHMMSS>.sqlite` (default folder: `backups/` next to it),

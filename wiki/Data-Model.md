@@ -31,8 +31,9 @@ Indexes: `idx_full_name`, `idx_trunc_id`. Required roster CSV columns: `First Na
 
 ## Application tables (shared columns)
 
-`senate_application`, `student_aid` and `agm_rsvp` share this set (`senate_application` and `agm_rsvp` are rebuilt from
-the export on every run; `student_aid` is kept, see [Full Exports](Full-Exports-and-Integrity#sabp-keeps-the-committees-work)):
+`senate_application`, `student_aid` and `agm_rsvp` share this set (`senate_application` and `agm_rsvp` are dropped and
+created again from the export on every run; `student_aid` is kept, see
+[Full Exports](Full-Exports-and-Integrity#sabp-keeps-the-committees-work)):
 
 | Column | Meaning |
 |---|---|

@@ -28,6 +28,9 @@ At least one of the name columns or `Student Number` must exist.
 
 ## Verification
 
+- **Only a `@mail.utoronto.ca` email counts.** An RSVP with a blank email, another domain (even `@utoronto.ca`) or text
+  that is not an address is unverified, with the reason `email is not a mail.utoronto.ca address`. This is checked before
+  the name, and the "more information" email asks for the UofT email (`python -m utsu_mail.notices agm more_info`).
 - With **no student number** column, people are matched on their ACORN-registered name alone (level 1, flag
   `name_only_match`).
 - A name shared by several roster students stays unverified (`name shared by N students`, flag `ambiguous_name`) until
@@ -45,7 +48,7 @@ At least one of the name columns or `Student Number` must exist.
 | `name_only_match` | matched on name alone |
 | `ambiguous_name` | name shared by several students |
 | `no_data_confirmation` | the data-processing confirmation is not "yes..." |
-| `no_uoft_email` | no email given |
+| `no_uoft_email` | no email given (such an RSVP is not verified) |
 
 ## Outputs (in `--output_dir`)
 
@@ -54,7 +57,7 @@ At least one of the name columns or `Student Number` must exist.
 | `agm_list_all.csv` | **Door list**: every verified attendee, sorted by last name. Columns `last_name, first_name, preferred_name, pronouns, email, meeting_preference, contact_ok, flags, verification_level, checked_in`. No ids. `checked_in` is a blank column for the door. |
 | `agm_list_in_person.csv` | The same columns, only people attending `In-person`. |
 | `agm_unverified.csv` | RSVPs that could not be verified, with `reason`. Keeps `uuid` and `student_uuid` for the "more information" emails. |
-| `agm_accommodations.csv` | Dietary and accessibility needs of verified attendees, by `uuid` only, no names, so a need cannot be traced to a person. |
+| `agm_accommodations.csv` | Dietary and accessibility needs of verified attendees, by `uuid` only, no names. Answers such as `None` or `N/A` are not needs and are left out (and not counted). |
 | `alerts_agm.csv` | Duplicate, ambiguous-match and non-binding RSVPs. |
 | `agm_run.json` | Counts (below). |
 

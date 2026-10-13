@@ -17,7 +17,7 @@ def person(first, last, number, ts):
 def test_alerts_file_is_written_even_when_there_is_nothing_to_look_at(tmp_path):
     conn = students_db(("Ann", "Lee", 3161))
     sap.process_sap(sap_form(tmp_path / "1.csv", [LC_ROW]), conn, output_dir=tmp_path / "out")
-    text = (tmp_path / "out" / "alerts_sap.csv").read_text(encoding="utf-8").strip()
+    text = (tmp_path / "out" / "alerts_sap.csv").read_text(encoding="utf-8-sig").strip()
     assert text == "severity,kind,program,uuid,student_uuid,detail"
 
 

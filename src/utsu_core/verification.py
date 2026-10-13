@@ -171,7 +171,10 @@ def setup_reader(csv_file: Path, mapping_file: Path, optional=(), identity=()):
     required_col = {form for form, name in name_table_mapping.items() if name not in set(optional)}
     f_in = open_csv(csv_file)
     reader = csv.reader(f_in)
-    headers = next(reader)
+    headers = next(reader, None)
+    if not headers or not any(h.strip() for h in headers):
+        f_in.close()
+        raise ValueError(f"{csv_file} is empty: it has no header row. Export the full form responses again.")
 
     # check if required columns are present in the headers; padding such as the form's "Faculty " is ignored
     headers = [clean_text(h) for h in headers]

@@ -11,6 +11,9 @@ Google Forms gives an edited or re-submitted response a **new timestamp**. Every
 export. Per student the newest verified application is binding and older ones are `superseded` (below), so there is
 nothing to "correct in place". To answer a "more information" email, the student edits or re-submits the form.
 
+The timestamp decides which submission is the newest. If some cannot be read (the expected form is
+`2026/08/14 1:30:47 p.m. AST`), the run logs a warning with examples, and for those the order in the file decides.
+
 ## What happens to each run
 
 1. Read and clean the export, build the `uuid` of every row (the last row wins when two share a `uuid`).
@@ -19,7 +22,8 @@ nothing to "correct in place". To answer a "more information" email, the student
    verified no longer matches, the application stays verified and a `roster_mismatch` alert is raised. Only unverified
    applications can become verified. **AGM is not sticky**: its status follows the roster on every run.
 4. Choose the binding application per student ([below](#one-binding-application-per-student)).
-5. Save. The **Senate and AGM tables are rebuilt from the export** (rows that are no longer in it are deleted). The SABP
+5. Save. The **Senate and AGM tables are dropped and created again from their schema, in one transaction** (so rows that
+   are no longer in the export, and tables from an older version, are gone). The SABP
    table is **kept** (it holds the committee's work), see [SABP](#sabp-keeps-the-committees-work).
 6. Write the outputs and the alerts files.
 

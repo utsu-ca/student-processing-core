@@ -84,7 +84,7 @@ A name written only in another script therefore has nothing left: it cannot be v
 "more information" email asks for the name again), but it still gets its own ids.
 
 Free text the applicant writes (for example the SABP general statement) is **not** changed and is written to outputs
-as UTF-8.
+as UTF-8 with a BOM (so Excel shows accents correctly).
 
 ## Reading files people re-saved
 

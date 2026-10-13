@@ -10,6 +10,7 @@ import codecs
 import csv
 import io
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -72,12 +73,44 @@ class SafeDictWriter(csv.DictWriter):
             self.writerow(rowdict)
 
 
+def check_writable(*paths) -> None:
+    """
+    Fail early, with a clear message, if an output file that already exists cannot be written, usually because it is
+    open in Excel (Windows refuses to write a file another program has open). Call it before anything is changed, so
+    a run never stops half way with some files new and some old.
+    """
+    for path in map(Path, paths):
+        if path.exists():
+            try:
+                with open(path, "ab"):
+                    pass
+            except PermissionError as e:
+                raise PermissionError(_LOCKED.format(path=path)) from e
+
+
+_LOCKED = "Cannot write {path}: it is open in another program (for example Excel). Close it and run again."
+
+
 def write_rows(path, fields, rows, extrasaction: str = "ignore") -> None:
-    """Write dict rows to a CSV (a header, then every cell made safe). Columns not in `fields` are left out."""
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = SafeDictWriter(f, fieldnames=fields, extrasaction=extrasaction)
-        writer.writeheader()
-        writer.writerows(rows)
+    """
+    Write dict rows to a CSV (a header, then every cell made safe). Columns not in `fields` are left out. The file is
+    written as UTF-8 with a BOM, which is what makes Excel show accented names correctly (`open_csv` reads it back),
+    under a temporary name and then moved into place, so a failure never leaves a half-written file.
+    """
+    path = Path(path)
+    temp = path.with_name(path.name + ".tmp")
+    try:
+        with open(temp, "w", newline="", encoding="utf-8-sig") as f:
+            writer = SafeDictWriter(f, fieldnames=fields, extrasaction=extrasaction)
+            writer.writeheader()
+            writer.writerows(rows)
+        os.replace(temp, path)
+    except PermissionError as e:
+        temp.unlink(missing_ok=True)
+        raise PermissionError(_LOCKED.format(path=path)) from e
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
     logger.info(f"Wrote {len(rows)} rows to {path}")
 
 

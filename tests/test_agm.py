@@ -62,7 +62,7 @@ def test_process_agm_verifies_by_name_and_dedupes(tmp_path):
     bo = next(r for r in result["verified"] if r["full_name"] == "Bo Chan")
     assert "no_data_confirmation" in bo["flags"]
 
-    accommodations = (out / "agm_accommodations.csv").read_text(encoding="utf-8")
+    accommodations = (out / "agm_accommodations.csv").read_text(encoding="utf-8-sig")
     assert "Halal" in accommodations and "Ann" not in accommodations and "ann@" not in accommodations
     assert conn.execute("SELECT status, COUNT(*) FROM agm_rsvp GROUP BY status ORDER BY status").fetchall() \
         == [("superseded", 1), ("unverified", 2), ("verified", 2)]
@@ -82,7 +82,7 @@ def test_everyone_and_in_person_lists(tmp_path):
     result = agm.process_agm(form, conn, output_dir=out)
 
     def names(file):
-        with open(out / file, newline="", encoding="utf-8") as f:
+        with open(out / file, newline="", encoding="utf-8-sig") as f:
             return [f"{r['first_name']} {r['last_name']}" for r in csv.DictReader(f)]
 
     assert names("agm_list_all.csv") == ["Ed Abe", "Bo Chan", "Ann Lee"]  # by last name
@@ -102,16 +102,16 @@ def test_door_lists_show_a_simple_attendance_and_no_ids(tmp_path):
     out = tmp_path / "out"
     result = agm.process_agm(form, conn, output_dir=out)
 
-    with open(out / "agm_list_all.csv", newline="", encoding="utf-8") as f:
+    with open(out / "agm_list_all.csv", newline="", encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
     assert list(rows[0]) == ["last_name", "first_name", "preferred_name", "pronouns", "email", "meeting_preference",
                              "contact_ok", "flags", "verification_level", "checked_in"]
     assert {r["email"].split("@")[0]: r["meeting_preference"] for r in rows} == {
         "ann": "In-person", "bo": "Virtual", "cy": "Virtual", "di": "Virtual"}  # blank or unclear is Virtual
-    assert "uuid" not in rows[0] and "application:" not in (out / "agm_list_all.csv").read_text(encoding="utf-8")
-    assert [r["first_name"] for r in csv.DictReader(open(out / "agm_list_in_person.csv", encoding="utf-8"))] == ["Ann"]
+    assert "uuid" not in rows[0] and "application:" not in (out / "agm_list_all.csv").read_text(encoding="utf-8-sig")
+    assert [r["first_name"] for r in csv.DictReader(open(out / "agm_list_in_person.csv", encoding="utf-8-sig"))] == ["Ann"]
     # the same simple values everywhere, including the accommodations and the run summary
-    assert {r["meeting_preference"] for r in csv.DictReader(open(out / "agm_accommodations.csv", encoding="utf-8"))} == {"Virtual"}
+    assert {r["meeting_preference"] for r in csv.DictReader(open(out / "agm_accommodations.csv", encoding="utf-8-sig"))} == {"Virtual"}
     assert result["summary"]["attendance"] == {"In-person": 1, "Virtual": 3}
     # the stored row keeps the original answer
     assert conn.execute("SELECT meeting_preference FROM agm_rsvp WHERE meeting_preference = ''").fetchall() == [("",)]
@@ -144,7 +144,7 @@ def test_standalone_verification_only_reports(tmp_path):
     conn = students_db(("Ann", "Lee", 3161))
     rows = agm.verify_file(form, conn.cursor(), tmp_path / "out")
     assert [(r["full_name"], r["status"]) for r in rows] == [("Ann Lee", "verified"), ("Cy Doe", "unverified")]
-    with open(tmp_path / "out" / "agm_verification.csv", newline="", encoding="utf-8") as f:
+    with open(tmp_path / "out" / "agm_verification.csv", newline="", encoding="utf-8-sig") as f:
         assert [r["status"] for r in csv.DictReader(f)] == ["verified", "unverified"]
     assert not (tmp_path / "out" / "agm_list_all.csv").exists()
     assert conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE name = 'agm_rsvp'").fetchone() == (0,)
@@ -163,11 +163,11 @@ def test_an_rsvp_that_more_than_one_student_fits_raises_an_alert_until_it_is_res
     # only the genuinely ambiguous one is raised (not "name not found"), in the log and in the alerts file
     assert [x["full_name"] for x in r["ambiguous"]] == ["Di Park"] and r["summary"]["ambiguous_matches"] == 1
     assert "AMBIGUOUS AGM RSVP" in caplog.text and "more than one student matches" in caplog.text
-    alerts = list(csv.DictReader(open(out / "alerts_agm.csv", encoding="utf-8")))
+    alerts = list(csv.DictReader(open(out / "alerts_agm.csv", encoding="utf-8-sig")))
     assert [(a["severity"], a["kind"]) for a in alerts] == [("WARNING", "ambiguous_match")]
     assert "shared by 2 students" in alerts[0]["detail"] and alerts[0]["uuid"] == r["ambiguous"][0]["uuid"]
     assert "ambiguous_name" in r["ambiguous"][0]["flags"]
-    assert "Park" not in (out / "agm_list_all.csv").read_text(encoding="utf-8")  # not on the door list
+    assert "Park" not in (out / "agm_list_all.csv").read_text(encoding="utf-8-sig")  # not on the door list
 
     # it stays raised on every run until it is resolved ...
     again = agm.process_agm(form, conn, output_dir=out)

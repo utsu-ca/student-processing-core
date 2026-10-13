@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from utsu_std.csv_safe import open_csv
+from utsu_std.database import split_statements
 from utsu_std.utils import absfile, clean_text, normalize_case, typed_uuid
 
 logger = logging.getLogger(__name__)
@@ -24,18 +25,6 @@ def ascii_digits(text: str) -> str:
     return "".join(c for c in clean_text(text) if c.isdigit())
 
 
-def _statements(script: str) -> list[str]:
-    """The SQL statements of a script, so they can run inside one transaction (PRAGMAs are left out)."""
-    statements, buffer = [], ""
-    for line in script.splitlines(keepends=True):
-        buffer += line
-        if sqlite3.complete_statement(buffer):
-            if not buffer.strip().upper().startswith("PRAGMA"):
-                statements.append(buffer.strip())
-            buffer = ""
-    return statements
-
-
 def import_uoft_data(conn: sqlite3.Connection, csv_file: Path):
     """
     Replace the UofT student data in the database with the data in a CSV file. Returns True if the import is successful.
@@ -52,7 +41,7 @@ def import_uoft_data(conn: sqlite3.Connection, csv_file: Path):
     conn.commit()
     try:
         conn.execute("BEGIN")
-        for statement in _statements(script):
+        for statement in split_statements(script):
             conn.execute(statement)
         conn.executemany(_INSERT, rows)
         logger.info("Indexing uoft_data table, please wait...")

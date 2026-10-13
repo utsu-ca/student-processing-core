@@ -64,6 +64,21 @@ Decisions that came with it:
 | L11 | Low | Packaging | `data/`, `templates/`, `src/schema/` are found through the project root, so only an editable install works | Open, documented in [Getting Started](Getting-Started#requirements) |
 | L12 | Low | Roster | The roster uuid joins the values without a separator | Open (negligible: other fields differ) |
 
+### AGM trace (second pass)
+
+| # | Severity | Issue | Status |
+|---|---|---|---|
+| A1 | High | Any email was accepted, so one student could be listed twice through two addresses (`@mail.` and `@utoronto.ca`) | **Fixed**: only `@mail.utoronto.ca` verifies, blank included. Two different `@mail.` addresses for one student (a typo) can still both verify; check the door list for repeated names |
+| A2 | Medium | Non-UofT addresses verified | **Fixed** with A1 |
+| A3 | Medium | The database was replaced before the files were written; a file open in Excel stopped the run half way | **Fixed**: `write_rows` writes to a temporary file and moves it into place, and the run checks every output is writable before changing anything |
+| A4 | Low | "None" / "N/A" counted as accommodation needs | **Fixed** |
+| A5 | Low | Accommodations are in door-list order | Accepted |
+| A6 | Low | Unreadable timestamps fell back to file order silently; `0:05 a.m.` crashed | **Fixed**: one warning with examples; such a timestamp is unreadable, not an error |
+| A7 | Low | An empty export raised a bare `StopIteration` | **Fixed**: `setup_reader` raises `ValueError("... is empty: it has no header row")` |
+| A8 | Low | Output CSVs had no BOM, so Excel showed accented names badly | **Fixed**: `write_rows` writes UTF-8 with a BOM; `open_csv` reads it back |
+| A9 | Low | A rebuilt table kept an older shape | **Fixed**: dropped and created again in one transaction |
+| A10 | Low | Strict form assumptions (required headers, division codes) | Accepted, given a correct `conversion_table_agm.csv` |
+
 ## Residual risks
 
 - A name plus four digits is a deliberately weak match (level 2). Level 3 (name, number and division) exists for cases

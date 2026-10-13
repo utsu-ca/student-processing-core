@@ -7,7 +7,7 @@ Every run reads the full export (see selection.py): nothing is skipped because a
     ... verify every row (set status, uoft_uuid, verification_level, match_method) ...
     run.keep_verified()                                               # a verified application is never downgraded
     run.select()                                                      # the binding application per person
-    run.replace_all(UPSERT)                                           # or each program saves its own way
+    run.replace_all(INSERT, "src/schema/x.sql")                       # or each program saves its own way
     run.settle()                                                      # saved statuses, duplicate check
     alerts = run.alert(out_dir)                                       # alerts_<program>.csv
 """
@@ -16,8 +16,10 @@ import sqlite3
 from pathlib import Path
 from typing import Callable
 
-from utsu_core.selection import OUTCOME_COLUMNS, person_key, select_current, set_statuses, submission_rank
+from utsu_core.selection import (OUTCOME_COLUMNS, person_key, select_current, set_statuses, submission_rank,
+                                 warn_unreadable_timestamps)
 from utsu_core.integrity import build_alerts, duplicate_verified, write_alerts
+from utsu_std.database import replace_table
 from utsu_std.utils import absfile
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,7 @@ class Run:
 
     def select(self) -> None:
         """Pick the binding application per key (see selection.select_current)."""
+        warn_unreadable_timestamps(self.rows, self.label)
         current, self.statuses = select_current(self.rows + self.absent, self.key, self.rank)
         present = {a["uuid"] for a in self.rows}
         self.current = [a for a in current if a["uuid"] in present]
@@ -80,11 +83,13 @@ class Run:
                     f"{count('superseded')} superseded, {count('non_binding')} non-binding and "
                     f"{count('not_considered')} not considered")
 
-    def replace_all(self, upsert: str) -> None:
-        """Make the table hold exactly the export: rows that are no longer in it (edited or deleted) are removed."""
-        self.conn.execute(f"DELETE FROM {self.table}")
-        self.conn.executemany(upsert, self.rows)
-        self.conn.commit()
+    def replace_all(self, insert: str, schema_file: str) -> None:
+        """
+        Make the table hold exactly the export: it is dropped and created again from its schema (so rows that are no
+        longer in the export, and an older table shape, are gone), in one transaction.
+        """
+        script = Path(absfile(schema_file)).read_text(encoding="utf-8-sig")
+        replace_table(self.conn, self.table, script, insert, self.rows)
 
     def settle(self, group_columns: tuple[str, ...] = ("student_uuid",)) -> None:
         """After the rows are saved: record the statuses of stored rows that lost, and check for duplicates."""

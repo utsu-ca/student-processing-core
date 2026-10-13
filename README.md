@@ -130,7 +130,7 @@ one. Student numbers typed with fullwidth or superscript digits, or with a stray
 valid for sending.
 
 Free text the applicant writes (for example the SABP general statement) is not changed, so reviewers read what was
-written; it is written to the output files as UTF-8. Files that people re-save from a spreadsheet are read whether they
+written; it is written to the output files as UTF-8 with a BOM, so Excel shows accents correctly. Files that people re-save from a spreadsheet are read whether they
 are UTF-8, UTF-16 or Excel's plain "CSV" (Windows-1252, with a warning); bytes that are not text become `\ufffd` instead
 of stopping the run.
 
@@ -239,6 +239,8 @@ python -m utsu_core.main --program agm --agm_file "path/to/RSVP.csv"
 (`--testing` supplies `testing/output/fake_agm.csv`; `python testing/generate_fake_data.py --only agm` regenerates it.) Columns come from
 `data/conversion_table_agm.csv`. For each person (by email) one RSVP is binding (the newest verified one, see above), verified against `uoft_data`:
 
+- **Only a `@mail.utoronto.ca` email counts.** An RSVP with a blank email or another domain (even `@utoronto.ca`) is
+  unverified (`email is not a mail.utoronto.ca address`);
 - the form may have **no student number**, so people are then matched on their ACORN-registered name alone
   (`name_only_match` flag, level 1). A name shared by several students stays unverified (`name shared by N students`)
   until the form adds a `Student Number` or `Division` column, which is then used automatically (level 2 or 3).
@@ -257,7 +259,7 @@ python -m utsu_core.main --program agm --agm_file "path/to/RSVP.csv"
   | `agm_list_all.csv` | the **door list**: every verified attendee, sorted by last name. Columns `last_name, first_name, preferred_name, pronouns, email, meeting_preference, contact_ok, flags, verification_level, checked_in`. No ids. `meeting_preference` is just **`In-person`** or **`Virtual`**: anything that is not clearly in person, including a blank answer, is Virtual. `checked_in` is a blank column for the door |
   | `agm_list_in_person.csv` | the same columns, only the people who are `In-person` |
   | `agm_unverified.csv` | RSVPs that could not be verified, with the `reason`; keeps the ids (`uuid`, `student_uuid`) the "more information" emails use |
-  | `agm_accommodations.csv` | dietary and accessibility needs of verified attendees, by `uuid` only, no names (so a need cannot be traced to a person) |
+  | `agm_accommodations.csv` | dietary and accessibility needs of verified attendees, by `uuid` only, no names; answers such as `None` or `N/A` are not needs and are left out |
   | `alerts_agm.csv` | what a person has to look at: duplicate, ambiguous-match and non-binding RSVPs |
   | `agm_run.json` | counts (below) |
 

@@ -243,7 +243,7 @@ def test_a_verified_senate_application_is_never_downgraded_but_agm_follows_the_r
     ts = "2026/10/01 9:00:00 a.m. AST"
     conn = students_db(("Ann", "Lee", 3161))
     senate_form = senate_file(tmp_path / "s.csv", [(ts, "Ann Lee", "1001231617", "ann@x.ca")])
-    agm_form_file = agm_form(tmp_path / "a.csv", [rsvp(ts, "Ann", "Lee", "ann@x.ca")])
+    agm_form_file = agm_form(tmp_path / "a.csv", [rsvp(ts, "Ann", "Lee", "ann@mail.utoronto.ca")])
     assert len(run_senate(senate_form, conn, tmp_path)["verified"]) == 1
     assert len(agm.process_agm(agm_form_file, conn, output_dir=tmp_path / "agm")["verified"]) == 1
 

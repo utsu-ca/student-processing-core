@@ -106,7 +106,7 @@ def verify_senators(csv_file: Path, cursor: sqlite3.Cursor, output_dir: Path | s
                    f"{app['status'].upper()} application {app['uuid']}")
 
     run.select()
-    run.replace_all(_INSERT)
+    run.replace_all(_INSERT, "src/schema/senate.sql")
     run.settle()
 
     verified = [a for a in run.current if a["status"] == "verified"]
