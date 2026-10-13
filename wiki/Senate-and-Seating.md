@@ -26,7 +26,8 @@ Timestamps look like `2026/08/14 1:30:47 p.m. AST` (the zone label is ignored). 
 `First-choice`, `Second-choice`, `Third-choice`, `Interested`, or anything else (e.g. `None`, blank) meaning "not
 interested".
 
-Rows with neither a name nor a student number are skipped. Verification follows
+Rows with no name and no student number are skipped; a row with a student number but no name is kept and stays
+unverified. Verification follows
 [Identity and Verification](Identity-and-Verification); re-run behaviour follows
 [Incremental Processing](Incremental-Processing-and-Integrity).
 

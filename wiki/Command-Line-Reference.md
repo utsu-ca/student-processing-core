@@ -27,15 +27,14 @@
 
 These work on an existing database, do their one job and exit; they are never saved to `config.json`. If several are
 given, only the first in this order runs: `--merge_reviews`, `--issue_batches`, `--record_decisions`,
-`--resolve_invalid`, `--record_physical`.
+`--resolve_invalid`.
 
 | Flag | Argument | Meaning |
 |---|---|---|
 | `--merge_reviews` | *(switch)* | Merge reviewer sheets into `sap_merged_ratings.csv` and the `sap_review` table; advance stages. |
 | `--issue_batches` | `all` or `1,2` | Record that batch sheets were handed out outside the program. Those batches are then closed. |
 | `--record_decisions` | CSV path | Columns `uuid`, `decision`, optional `awarded_amount`. Moves applications to `decided`. |
-| `--resolve_invalid` | comma-separated ids | A person accepts held (invalid) applications; the next run takes the edited row as the baseline. |
-| `--record_physical` | CSV path | Students checked in person; raises verified level-2 applications to level 3. |
+| `--resolve_invalid` | comma-separated ids | A person accepts held (invalid) applications; the next run takes the edited row as the baseline. |
 
 ### Infrastructure flags
 
@@ -91,7 +90,7 @@ Before every run that uses a database, a consistent copy (SQLite's online backup
 `<database folder>/backups/<name>_<YYYYmmdd-HHMMSS>.sqlite`; two runs in one second get a `_1`, `_2` suffix. Nothing is
 written if the database does not exist yet. Backups hold the same private data as the database.
 
-## `python -m utsu_core.agm_verify`
+## `python -m utsu_core.agm`
 
 Verify an AGM RSVP export against a database that already holds `uoft_data`, without writing lists or database rows.
 

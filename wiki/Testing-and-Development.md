@@ -11,7 +11,7 @@ python -m pytest --doctest-modules src    # doctests embedded in the source (39)
 
 | File | Covers |
 |---|---|
-| `test_identity.py` | typed ids, matching levels, physical check-in, backups |
+| `test_identity.py` | typed ids, matching levels (name / student number / division), backups |
 | `test_unicode.py` | ASCII cleaning, odd inputs, roster import of accented names |
 | `test_incremental.py` | re-runs, edited rows, held applications, decisions |
 | `test_completed.py` | completed applications are final per term |

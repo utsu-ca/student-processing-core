@@ -13,6 +13,7 @@ from utsu_mail import campaign
 from utsu_mail.recipients import read_csv
 from utsu_std.csv_safe import SafeDictWriter, read_cell, safe_cell
 from utsu_std.database import backup_database
+from utsu_std.parsing_utils import get_trunc_id
 from utsu_std.utils import absfile, application_uuid_for, identity_key, parse_id, student_uuid_for
 
 SENATE_HEADERS = {"ts": "Timestamp", "user": "Username", "name": "Full ACORN-registered Name",
@@ -50,48 +51,60 @@ def run_senate(path, conn, tmp_path):
 
 # ---- matching -----------------------------------------------------------------------------------------------
 
-def test_decide_uses_whatever_is_given():
+def test_decide_always_needs_a_name_and_uses_what_else_is_given():
     decide = verification.decide
     ann = [("u1", 3161, "UC")]
-    assert decide("Ann Lee", "1001231617", "", ann, ann).level == 2
-    assert decide("Ann Lee", "", "", ann, []).level == 1
-    assert decide("", "1001231617", "", [], ann).method == "student number only"
+    assert decide("Ann Lee", "1001231617", "", ann).level == 2
+    assert decide("Ann Lee", "", "", ann).level == 1
+    # a student number alone never identifies anyone: the roster only has its last four digits
+    assert decide("", "1001231617", "", ann).reason == "no name given"
+    assert not decide("", "1001231617", "UC", ann).verified
     # a wrong number never falls back to the name
-    assert decide("Ann Lee", "1009999999", "", ann, []).reason == "student number does not match"
-    assert decide("Ann Lee", "1009999999", "", [], []).reason == "name not found"
-    assert decide("Sam Lee", "", "", [("u1", 1, "UC"), ("u2", 2, "UC")], []).reason.startswith("name shared by 2")
-    assert not decide("", "", "", [], []).verified
+    assert decide("Ann Lee", "1009999999", "", ann).reason == "student number does not match"
+    assert decide("Ann Lee", "1009999999", "", []).reason == "name not found"
+    assert decide("Sam Lee", "", "", [("u1", 1, "UC"), ("u2", 2, "UC")]).reason.startswith("name shared by 2")
+    assert not decide("", "", "", []).verified
 
 
 def test_the_level_is_the_number_of_factors_that_matched():
     decide = verification.decide
     ann = [("u1", 3161, "UC")]
-    assert [decide("Ann Lee", "", "", ann, []).level, decide("", "1001231617", "", [], ann).level] == [1, 1]
+    assert decide("Ann Lee", "", "", ann).level == 1
     # name < name + student number  OR  name + division < name + student number + division
-    two = [decide("Ann Lee", "1001231617", "", ann, ann), decide("Ann Lee", "", "UC", ann, []),
-           decide("", "1001231617", "UC", [], ann)]
-    assert [m.level for m in two] == [2, 2, 2]
-    assert [m.method for m in two] == ["name + student number", "name + division", "student number + division"]
-    three = decide("Ann Lee", "1001231617", "UC", ann, ann)
+    two = [decide("Ann Lee", "1001231617", "", ann), decide("Ann Lee", "", "UC", ann)]
+    assert [m.level for m in two] == [2, 2]
+    assert [m.method for m in two] == ["name + student number", "name + division"]
+    three = decide("Ann Lee", "1001231617", "UC", ann)
     assert (three.level, three.method) == (3, "name + student number + division")
 
 
 def test_a_division_must_match_and_never_identifies_anyone_alone():
     decide = verification.decide
     ann = [("u1", 3161, "UC")]
-    assert decide("Ann Lee", "1001231617", "TRIN", ann, ann).reason == "division does not match"
-    assert decide("Ann Lee", "", "TRIN", ann, []).reason == "division does not match"
-    assert decide("", "1001231617", "TRIN", [], ann).reason == "division does not match"
-    assert decide("", "", "UC", [], []).reason == "no name or student number given"
+    assert decide("Ann Lee", "1001231617", "TRIN", ann).reason == "division does not match"
+    assert decide("Ann Lee", "", "TRIN", ann).reason == "division does not match"
+    assert decide("", "", "UC", []).reason == "no name given"
     # a student with no division on the roster never matches a division that was given
-    assert decide("Ann Lee", "", "UC", [("u1", 3161, "")], []).reason == "division does not match"
+    assert decide("Ann Lee", "", "UC", [("u1", 3161, "")]).reason == "division does not match"
     # a division tells two students with the same name apart
     sams = [("u1", 1, "UC"), ("u2", 2, "TRIN")]
-    assert decide("Sam Lee", "", "", sams, []).reason.startswith("name shared by 2")
-    assert decide("Sam Lee", "", "TRIN", sams, []).uoft_uuid == "u2"
-    assert decide("Sam Lee", "", "NEW", sams, []).reason == "division does not match"
+    assert decide("Sam Lee", "", "", sams).reason.startswith("name shared by 2")
+    assert decide("Sam Lee", "", "TRIN", sams).uoft_uuid == "u2"
+    assert decide("Sam Lee", "", "NEW", sams).reason == "division does not match"
     same = [("u1", 1, "UC"), ("u2", 2, "UC")]
-    assert decide("Sam Lee", "", "UC", same, []).reason == "name shared by 2 students in that division; a student number is needed"
+    assert decide("Sam Lee", "", "UC", same).reason == "name shared by 2 students in that division; a student number is needed"
+
+
+def test_two_students_with_the_same_name_and_last_four_digits_are_ambiguous_not_guessed():
+    decide = verification.decide
+    twins = [("u1", 3161, "UC"), ("u2", 3161, "UC")]
+    assert decide("Sam Lee", "1001231617", "", twins).reason == \
+        "name and student number shared by 2 students; a division is needed"
+    # a division that tells them apart settles it; one that does not leaves it to a person
+    apart = [("u1", 3161, "UC"), ("u2", 3161, "TRIN")]
+    assert decide("Sam Lee", "1001231617", "TRIN", apart).uoft_uuid == "u2"
+    assert decide("Sam Lee", "1001231617", "UC", twins).reason == \
+        "name and student number shared by 2 students in that division; a person to decide is needed"
 
 
 def test_match_students_reads_the_division_and_normalises_it():
@@ -104,21 +117,20 @@ def test_match_students_reads_the_division_and_normalises_it():
     assert got[2].reason == "division does not match" and (got[3].level, got[3].method) == (1, "name only")
 
 
-def test_match_students_with_names_only_and_numbers_only():
+def test_match_students_needs_a_name_and_a_number_alone_matches_nobody():
     conn = students_db(("Ann", "Lee", 3161), ("Bo", "Chan", 9111), ("Di", "Park", 1111), ("Di", "Park", 2222))
     people = [{"full_name": "ann  LEE"}, {"id": "1009991111"}, {"full_name": "Di Park"},
               {"full_name": "Zed Zed", "id": "1000000000"}, {"id": "1000000000"}]
     got = verification.match_students(people, conn.cursor())
-    assert [(m.uoft_uuid, m.level) for m in got] == [("u0", 1), ("u1", 1), (None, None), (None, None), (None, None)]
-    assert got[2].reason.startswith("name shared") and got[4].reason == "student number not found"
+    assert [(m.uoft_uuid, m.level) for m in got] == [("u0", 1), (None, None), (None, None), (None, None), (None, None)]
+    assert got[1].reason == "no name given" and got[2].reason.startswith("name shared")
+    assert got[3].reason == "name not found" and got[4].reason == "no name given"
 
 
 def test_a_database_error_is_raised_not_reported_as_not_found():
     empty = sqlite3.connect(":memory:")
     with pytest.raises(sqlite3.OperationalError):
         verification.match_students([{"full_name": "Ann Lee"}], empty.cursor())
-    with pytest.raises(sqlite3.OperationalError):
-        verification.bulk_check_for_students(["Ann Lee"], [3161], empty.cursor())
 
 
 def test_a_broken_lookup_table_is_an_error(tmp_path):
@@ -129,8 +141,8 @@ def test_a_broken_lookup_table_is_an_error(tmp_path):
 
 
 def test_trunc_id_survives_whitespace_and_blanks():
-    assert verification.trunc_of(" 1006639715 ") == 3971
-    assert verification.trunc_of("") is None and verification.trunc_of("12345") is None
+    assert get_trunc_id(" 1006639715 ") == 3971
+    assert get_trunc_id("") is None and get_trunc_id("12345") is None
 
 
 # ---- forms that lack a name or a student number -------------------------------------------------------------
@@ -147,21 +159,20 @@ def test_senate_form_without_student_numbers_verifies_by_name(tmp_path):
                         "WHERE status = 'verified'").fetchall() == [(2, "name + division")]
 
 
-def test_senate_form_without_names_verifies_by_student_number(tmp_path):
+def test_a_student_number_without_a_name_never_verifies(tmp_path):
     conn = students_db(("Ann", "Lee", 3161), ("Bo", "Chan", 9111))
     form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "", "1001231617", "ann@x.ca"),
-                                            ("2026/10/01 9:05:00 a.m. AST", "", "1000000000", "q@x.ca")],
-                       with_name=False)
+                                            ("2026/10/01 9:05:00 a.m. AST", "Bo Chan", "1009991111", "bo@x.ca")])
     r = run_senate(form, conn, tmp_path)
-    assert [a["id"] for a in r["verified"]] == ["1001231617"] and len(r["unverified"]) == 1
-    assert conn.execute("SELECT verification_level, match_method FROM senate_application "
-                        "WHERE status = 'verified'").fetchall() == [(2, "student number + division")]
+    assert [a["full_name"] for a in r["verified"]] == ["Bo Chan"]
+    # the row with only a number is kept for a person to look at, never matched on the number
+    assert [(a["id"], a["verification_level"]) for a in r["unverified"]] == [("1001231617", None)]
 
 
-def test_a_form_with_neither_name_nor_number_is_refused(tmp_path):
+def test_a_form_without_a_name_column_is_refused(tmp_path):
     conn = students_db(("Ann", "Lee", 3161))
-    form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "", "", "a@x.ca")],
-                       with_name=False, with_id=False)
+    form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "", "1001231617", "a@x.ca")],
+                       with_name=False)
     with pytest.raises(ValueError, match="identify people"):
         run_senate(form, conn, tmp_path)
 
@@ -174,7 +185,7 @@ def test_sap_form_without_student_numbers_verifies_by_name(tmp_path):
     assert r["verified"][0]["verification_level"] == 1
 
 
-def test_agm_rsvp_with_only_a_student_number(tmp_path):
+def test_agm_form_without_name_columns_is_refused(tmp_path):
     conn = students_db(("Ann", "Lee", 3161))
     header = [h for h in AGM_HEADERS if "ACORN-registered" not in h] + ["Student Number"]
     row = {"Timestamp": "2026/10/01 9:00:00 a.m. AST", "Username": "p@gmail.com", "Preferred Name": "",
@@ -182,9 +193,8 @@ def test_agm_rsvp_with_only_a_student_number(tmp_path):
            "Do you have any dietary restrictions or food allergies?": "", "Accessibility Requirements": "",
            "Data Processing Confirmation": "Yes", "Contact Consent": "Yes", "Student Number": "1001231617"}
     form = write_rows(tmp_path / "rsvp.csv", header, [row])
-    r = agm.process_agm(form, conn, output_dir=tmp_path / "out")
-    assert [x["match_method"] for x in r["verified"]] == ["student number only"]
-    assert "student_number_only_match" in r["verified"][0]["flags"]
+    with pytest.raises(ValueError, match="identify people"):
+        agm.process_agm(form, conn, output_dir=tmp_path / "out")
 
 
 # ---- internal ids come from the email ----------------------------------------------------------------------
@@ -341,11 +351,10 @@ def test_a_student_with_no_college_belongs_to_their_faculty(tmp_path):
 
 def test_a_division_alone_identifies_nobody(tmp_path):
     conn = students_db(("Ann", "Lee", 3161))
-    form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "", "", "a@x.ca")], with_name=False,
-                       with_id=False)
-    # the form has a division but neither a name nor a student number column
-    with pytest.raises(ValueError, match="identify people"):
-        run_senate(form, conn, tmp_path)
+    form = senate_file(tmp_path / "s.csv", [("2026/10/01 9:00:00 a.m. AST", "", "", "a@x.ca")])
+    # the form has a division, but this row has neither a name nor a student number
+    r = run_senate(form, conn, tmp_path)
+    assert r["verified"] == []
 
 
 # ---- databases from an older version -----------------------------------------------------------------------

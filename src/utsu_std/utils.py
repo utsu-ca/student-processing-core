@@ -309,11 +309,6 @@ def parse_id(text: str) -> tuple[str, str]:
     return (kind, value) if colon and kind and value else ("", text)
 
 
-def id_value(text: str) -> str:
-    """The bare uuid of an id, e.g. for a human-readable reference in an email or a log line."""
-    return parse_id(text)[1]
-
-
 def id_kind(text: str) -> str:
     """The kind an id was made for ("" when it does not say)."""
     return parse_id(text)[0]

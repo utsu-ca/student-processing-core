@@ -3,7 +3,7 @@ import logging
 import sqlite3
 from pathlib import Path
 
-from utsu_core import agm, agm_verify
+from utsu_core import agm
 from utsu_core.verification import construct_lookup_tables
 from utsu_std.utils import absfile
 
@@ -142,7 +142,7 @@ def test_standalone_verification_only_reports(tmp_path):
         rsvp("2026/10/01 11:00:00 a.m. AST", "Cy", "Doe", "cy@mail.utoronto.ca"),
     ])
     conn = students_db(("Ann", "Lee", 3161))
-    rows = agm_verify.verify_file(form, conn.cursor(), tmp_path / "out")
+    rows = agm.verify_file(form, conn.cursor(), tmp_path / "out")
     assert [(r["full_name"], r["status"]) for r in rows] == [("Ann Lee", "verified"), ("Cy Doe", "unverified")]
     with open(tmp_path / "out" / "agm_verification.csv", newline="", encoding="utf-8") as f:
         assert [r["status"] for r in csv.DictReader(f)] == ["verified", "unverified"]

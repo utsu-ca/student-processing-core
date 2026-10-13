@@ -10,15 +10,8 @@ from utsu_std.utils import clean_text, normalize_case
 
 logger = logging.getLogger(__name__)
 
-# How sure a match is: the number of factors (name, student number, division) that matched the same student.
-# One factor alone is level 1 (a name or a student number: a division alone identifies nobody), any two are level 2
-# (name + student number, name + division, student number + division), all three are level 3.
-LEVEL_ONE, LEVEL_TWO, LEVEL_THREE = 1, 2, 3
-LEVEL_NAMES = {LEVEL_ONE: "name or student number", LEVEL_TWO: "two of name, student number, division",
-               LEVEL_THREE: "name + student number + division"}
-METHOD_NAME, METHOD_ID, METHOD_BOTH = "name only", "student number only", "name + student number"
-METHOD_NAME_DIVISION, METHOD_ID_DIVISION = "name + division", "student number + division"
-METHOD_ALL = "name + student number + division"
+
+METHOD_NAME = "name only"
 _CHUNK = 300
 
 
@@ -35,17 +28,6 @@ class Match:
         return self.uoft_uuid is not None
 
 
-def trunc_of(student_number: str) -> int | None:
-    """
-    The roster's 4-digit form of a student number, or None when it is blank or unreadable.
-
-    >>> trunc_of("1006639715"), trunc_of(" "), trunc_of("12")
-    (3971, None, None)
-    """
-    trunc = get_trunc_id(student_number or "")
-    return int(trunc) if trunc is not None and str(trunc).isdecimal() else None
-
-
 def division_of(text: str) -> str:
     """
     The division code of a form or roster value: `UC - University College` is `UC`.
@@ -56,78 +38,72 @@ def division_of(text: str) -> str:
     return division_code(clean_text(text))
 
 
-def decide(name: str, number: str, division: str, by_name: list[tuple[str, int, str]],
-           by_trunc: list[tuple[str, int, str]]) -> Match:
+def decide(name: str, number: str, division: str, by_name: list[tuple[str, int, str]]) -> Match:
     """
-    Decide one person from the roster rows sharing their name and the rows sharing their truncated number
-    (each a (uoft_data.uuid, trunc_id, division code) tuple). Uses whatever was given: a name, a student number
-    or both, and a division as well when the application has one. Every value given has to match the same
-    student, and a wrong value never falls back to the others:
+    Decide one person from the roster rows sharing their name (each a (uoft_data.uuid, trunc_id, division code)
+    tuple). A name is always needed: the roster only has the last four digits of a student number, which many
+    students share, so a number or a division never identifies anyone alone. They only narrow down the people
+    with that name. Every value given has to match the same student, and a wrong value never falls back to the
+    others:
       name only                          the name belongs to exactly one student            level 1
-      student number only                the number belongs to exactly one student          level 1
       name + student number              both belong to the same student                    level 2
       name + division                    exactly one student of that name is in the division level 2
-      student number + division          likewise                                           level 2
       name + student number + division   all three belong to the same student              level 3
-    A division alone identifies nobody. A roster student's division is their college or division, or their faculty
-    when they have none (see `match_students`); a student with neither never matches a given division.
+    A roster student's division is their college or division, or their faculty when they have none (see
+    `match_students`); a student with neither never matches a given division.
 
-    >>> decide("Ann Lee", "1001231617", "", [("u1", 3161, "UC")], [("u1", 3161, "UC")])
+    >>> decide("Ann Lee", "1001231617", "", [("u1", 3161, "UC")])
     Match(uoft_uuid='u1', level=2, method='name + student number', reason='')
-    >>> decide("Ann Lee", "1001231617", "UC", [("u1", 3161, "UC")], [("u1", 3161, "UC")]).level
+    >>> decide("Ann Lee", "1001231617", "UC", [("u1", 3161, "UC")]).level
     3
-    >>> decide("Ann Lee", "", "", [("u1", 3161, "UC")], [])
+    >>> decide("Ann Lee", "", "", [("u1", 3161, "UC")])
     Match(uoft_uuid='u1', level=1, method='name only', reason='')
-    >>> decide("Sam Lee", "", "TRIN", [("u1", 1, "UC"), ("u2", 2, "TRIN")], [])
+    >>> decide("Sam Lee", "", "TRIN", [("u1", 1, "UC"), ("u2", 2, "TRIN")])
     Match(uoft_uuid='u2', level=2, method='name + division', reason='')
-    >>> decide("Ann Lee", "", "TRIN", [("u1", 3161, "UC")], []).reason
+    >>> decide("Ann Lee", "", "TRIN", [("u1", 3161, "UC")]).reason
     'division does not match'
-    >>> decide("Ann Lee", "1001231617", "TRIN", [("u1", 3161, "UC")], [("u1", 3161, "UC")]).reason
+    >>> decide("Ann Lee", "1001231617", "TRIN", [("u1", 3161, "UC")]).reason
     'division does not match'
-    >>> decide("", "1001231617", "", [], [("u1", 3161, "UC"), ("u2", 3161, "UC")]).reason
-    'student number shared by 2 students; a name is needed'
-    >>> decide("Ann Lee", "1009999999", "", [("u1", 3161, "UC")], []).reason
+    >>> decide("Ann Lee", "1009999999", "", [("u1", 3161, "UC")]).reason
     'student number does not match'
-    >>> decide("", "", "UC", [], []).reason
-    'no name or student number given'
+    >>> decide("", "1001231617", "UC", []).reason
+    'no name given'
     """
-    trunc = trunc_of(number)
-    if name and number:
-        if not by_name:
-            return Match(None, None, "", "name not found")
-        hits = [row for row in by_name if trunc is not None and row[1] == trunc]
-        if not hits:
+    if not name:
+        return Match(None, None, "", "no name given")
+    if not by_name:
+        return Match(None, None, "", "name not found")
+
+    # `candidates` starts as the roster students with this name.
+    candidates = by_name
+    if number:
+        trunc = get_trunc_id(number)
+        candidates = [student for student in candidates if student[1] == trunc]
+        if not candidates:
             return Match(None, None, "", "student number does not match")
-        if division:
-            hits = [row for row in hits if row[2] == division]
-            if not hits:
-                return Match(None, None, "", "division does not match")
-            return Match(min(hits)[0], LEVEL_THREE, METHOD_ALL, "")
-        return Match(min(hits)[0], LEVEL_TWO, METHOD_BOTH, "")
-    if name or number:
-        rows, what, other = (by_name, "name", "student number") if name else (by_trunc, "student number", "name")
-        if not rows:
-            return Match(None, None, "", f"{what} not found")
-        if division:
-            rows = [row for row in rows if row[2] == division]
-            if not rows:
-                return Match(None, None, "", "division does not match")
-        if len(rows) > 1:
-            within = " in that division" if division else ""
-            return Match(None, None, "", f"{what} shared by {len(rows)} students{within}; a {other} is needed")
-        level = LEVEL_TWO if division else LEVEL_ONE
-        method = ((METHOD_NAME_DIVISION if name else METHOD_ID_DIVISION) if division
-                  else (METHOD_NAME if name else METHOD_ID))
-        return Match(rows[0][0], level, method, "")
-    return Match(None, None, "", "no name or student number given")
+    if division:
+        candidates = [student for student in candidates if student[2] == division]
+        if not candidates:
+            return Match(None, None, "", "division does not match")
+
+    # more than one student is still possible: it cannot be decided, so a person has to
+    if len(candidates) > 1:
+        what = "name and student number" if number else "name"
+        within = " in that division" if division else ""
+        need = "a student number" if not number else "a division" if not division else "a person to decide"
+        return Match(None, None, "", f"{what} shared by {len(candidates)} students{within}; {need} is needed")
+
+    # exactly one student is left; the more things that agreed, the higher the level
+    factors = ["name"] + ["student number"] * bool(number) + ["division"] * bool(division)
+    return Match(candidates[0][0], len(factors), " + ".join(factors) if len(factors) > 1 else METHOD_NAME, "")
 
 
 def match_students(people: list[dict], cursor: sqlite3.Cursor, name_key: str = "full_name",
                    id_key: str = "id", division_key: str = "division") -> list[Match]:
     """
-    Check each person against uoft_data and return one Match per person, in the same order. A person may give a
-    name, a student number or both, and a division (see `decide`). Database errors are raised, never reported as
-    "not found".
+    Check each person against uoft_data and return one Match per person, in the same order. A person must give a
+    name; a student number and a division are optional (see `decide`). Database errors are raised, never reported
+    as "not found".
     """
     results: list[Match] = []
     for start in range(0, len(people), _CHUNK):
@@ -136,71 +112,24 @@ def match_students(people: list[dict], cursor: sqlite3.Cursor, name_key: str = "
         numbers = [(p.get(id_key) or "").strip() for p in chunk]
         divisions = [division_of(p.get(division_key) or "") for p in chunk]
         wanted_names = sorted({n for n in names if n})
-        wanted_truncs = sorted({t for t in map(trunc_of, numbers) if t is not None})
 
         by_name: dict[str, list[tuple[str, int, str]]] = {}
-        by_trunc: dict[int, list[tuple[str, int, str]]] = {}
-        clauses, params = [], []
         if wanted_names:
-            clauses.append(f"full_name IN ({','.join('?' * len(wanted_names))})")
-            params += wanted_names
-        if wanted_truncs:
-            clauses.append(f"trunc_id IN ({','.join('?' * len(wanted_truncs))})")
-            params += wanted_truncs
-        if clauses:
             cursor.execute(f"SELECT uuid, trunc_id, full_name, division, faculty FROM uoft_data "
-                           f"WHERE {' OR '.join(clauses)}", params)
+                           f"WHERE full_name IN ({','.join('?' * len(wanted_names))})", wanted_names)
             for uoft_uuid, trunc_id, full_name, roster_division, roster_faculty in cursor.fetchall():
                 # a student's division is their college or division; a student with none belongs to their faculty
                 # (the Senate form's division codes are colleges and faculties, as in the seats table)
                 row = (uoft_uuid, trunc_id, division_of(roster_division or "") or division_of(roster_faculty or ""))
                 by_name.setdefault(full_name, []).append(row)
-                by_trunc.setdefault(trunc_id, []).append(row)
 
         for raw, name, number, division in zip(chunk, names, numbers, divisions):
-            if not name and not number and str(raw.get(name_key) or "").strip():
-                # only a name was given, and nothing of it is plain ASCII (e.g. another script)
+            if not name and str(raw.get(name_key) or "").strip():
+                # a name was given, and nothing of it is plain ASCII (e.g. another script)
                 results.append(Match(None, None, "", "name has no plain letters (only A-Z letters are supported)"))
                 continue
-            results.append(decide(name, number, division, by_name.get(name, []), by_trunc.get(trunc_of(number), [])))
+            results.append(decide(name, number, division, by_name.get(name, [])))
     return results
-
-
-def bulk_check_for_students(full_names: list[str], trunc_ids: list[str], cursor: sqlite3.Cursor):
-    """
-    Check students against uoft_data by (trunc_id, full_name).
-
-    Returns {"result": bool, "matches": [...uoft_data rows], "non_matches": [(full_name, trunc_id), ...]}.
-    Database errors are raised.
-    """
-    cursor.execute("DROP TABLE IF EXISTS temp_chk_stds")
-    cursor.execute("CREATE TEMP TABLE temp_chk_stds (trunc_id INTEGER, full_name TEXT)")
-    try:
-        cursor.executemany(
-            "INSERT INTO temp_chk_stds (full_name, trunc_id) VALUES (?, ?)",
-            list(zip(full_names, trunc_ids))
-        )
-        cursor.execute("""
-                SELECT s.*
-                FROM uoft_data s
-                INNER JOIN temp_chk_stds t
-                ON s.trunc_id = t.trunc_id AND s.full_name = t.full_name
-            """)
-        matches = cursor.fetchall()
-
-        cursor.execute("""
-                SELECT t.full_name, t.trunc_id
-                FROM temp_chk_stds t
-                LEFT JOIN uoft_data s
-                ON s.trunc_id = t.trunc_id AND s.full_name = t.full_name
-                WHERE s.uuid IS NULL
-            """)
-        non_matches = cursor.fetchall()
-    finally:
-        cursor.execute("DROP TABLE IF EXISTS temp_chk_stds")
-
-    return {"result": len(matches) == len(full_names), "matches": matches, "non_matches": non_matches}
-
 
 
 def construct_lookup_tables(mapping_file: Path) -> list[dict[str, str]]:

@@ -159,16 +159,15 @@ def test_diagnose_names_the_unverified_fields(tmp_path):
     assert diagnose({**ada, "id": "1000000009"}, cur) == (ada_id, [NUMBER_FIELD])
     assert diagnose({**ada, "full_name": "Adda Lovelace"}, cur) == (ada_id, [NAME_FIELD])
     assert diagnose({"full_name": "Zed Nobody", "id": "1009999999", "email": "z@x.ca"}, cur) == \
-        (student_uuid_for("z@x.ca"), [NAME_FIELD, NUMBER_FIELD])
+        (student_uuid_for("z@x.ca"), [NAME_FIELD])
     # only a name: a shared name needs a student number, an unknown name needs a better name
     assert diagnose({"full_name": "Sam Lee", "email": "s@x.ca"}, cur) == (student_uuid_for("s@x.ca"), [NUMBER_FIELD])
     assert diagnose({"full_name": "Nobody", "email": "N@x.ca"}, cur) == (student_uuid_for("n@x.ca"), [NAME_FIELD])
-    # only a student number: verified when it is the only one, else it must be wrong
-    assert diagnose({"id": "1000011119", "email": "s1@x.ca"}, cur) == (student_uuid_for("s1@x.ca"), [])
-    assert diagnose({"id": "1000099999", "email": "q@x.ca"}, cur)[1] == [NUMBER_FIELD]
-    # no email: the student number identifies them; nothing at all asks for both
+    # a student number alone matches nobody, so the name is what is asked for
+    assert diagnose({"id": "1000011119", "email": "s1@x.ca"}, cur) == (student_uuid_for("s1@x.ca"), [NAME_FIELD])
+    # no email: the student number identifies them
     assert diagnose({"id": "1000099999"}, cur)[0] == student_uuid_for(student_number="1000099999")
-    assert diagnose({"email": "e@x.ca"}, cur)[1] == [NAME_FIELD, NUMBER_FIELD]
+    assert diagnose({"email": "e@x.ca"}, cur)[1] == [NAME_FIELD]
 
 
 def test_notices_to_tracked_email(monkeypatch, tmp_path):

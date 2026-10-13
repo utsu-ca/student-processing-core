@@ -1,27 +1,33 @@
 """
 Annual General Meeting (AGM) voter RSVP processor.
 
-Reads the RSVP form export, keeps each person's newest RSVP, verifies them (see agm_verify.py), records every RSVP in
+Reads the RSVP form export, keeps each person's newest RSVP, verifies them against uoft_data, records every RSVP in
 the agm_rsvp table, and writes two attendee lists (everyone, and in-person only) plus a separate name-free
 accommodations list for the organizers.
+
+The verification can also be run on its own, which only reports (agm_verification.csv); it writes no voter lists
+and no database rows:
+
+    python -m utsu_core.agm --agm_file RSVP.csv --db path/to/db.sqlite [--output_dir DIR]
+    python -m utsu_core.agm --testing        # fake RSVPs from the last `main --testing` run, against its database
+
+The RSVP form may have no student number, so a person is then matched on their ACORN-registered name alone. A name
+shared by more than one student cannot be decided and stays unverified until the form also supplies a "Student
+Number" or "Division" column, which is then used to tell them apart. A name is always needed.
 """
-import csv
+import argparse
 import json
 import logging
 import re
 import sqlite3
-from datetime import datetime
 from pathlib import Path
 
-from utsu_core.agm_verify import is_ambiguous, is_yes, verify_rsvps
-from utsu_core.incremental import (OUTCOME_SQL_TYPES, TRACKING_SQL_TYPES, add_missing_columns, apply_known,
-                                   count_new, dedupe_by_uuid, fingerprint, known_rows, select_current, set_statuses)
-from utsu_core.integrity import (build_alerts, changed_after_processing, duplicate_verified, hold, record_invalid,
-                                 restored_after_processing, write_alerts)
-from utsu_core.senate import parse_submission_ts, submission_rank
-from utsu_core.verification import mapped_names, setup_reader
-from utsu_std.csv_safe import SafeDictWriter
-from utsu_std.utils import absfile, application_uuid_for, identity_key, normalize_case, student_uuid_for
+from utsu_core.incremental import dedupe_by_uuid, fingerprint, select_current
+from utsu_core.integrity import hold
+from utsu_core.pipeline import Run, ensure_tracked_table
+from utsu_core.verification import METHOD_NAME, mapped_names, match_students, setup_reader
+from utsu_std.csv_safe import write_rows
+from utsu_std.utils import absfile, application_uuid_for, normalize_case, student_uuid_for
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +36,10 @@ LIST_FIELDS = ["last_name", "first_name", "preferred_name", "pronouns", "email",
 UNVERIFIED_FIELDS = ["uuid", "student_uuid", "reason", "submission_ts", "full_name", "student_number", "email",
                      "personal_email", "meeting_preference", "flags"]
 ACCOMMODATION_FIELDS = ["uuid", "meeting_preference", "dietary", "accessibility"]
-# the form needs at least one of these; an RSVP may give a name, a student number ("Student Number" column) or both
-IDENTITY_COLUMNS = ("first_name", "last_name", "Student Number")
+REPORT_FIELDS = ["uuid", "status", "reason", "match_method", "verification_level", "student_uuid", "uoft_uuid",
+                 "full_name", "email", "flags"]
+# the form needs a name column; "Student Number" and "Division" are optional and only narrow a match
+IDENTITY_COLUMNS = ("first_name", "last_name")
 
 
 def agm_uuid(rsvp: dict[str, str]) -> str:
@@ -40,9 +48,56 @@ def agm_uuid(rsvp: dict[str, str]) -> str:
                                 rsvp.get("student_number", ""), rsvp.get("full_name", ""))
 
 
-def person_key(rsvp: dict[str, str]) -> str:
-    """Who an RSVP belongs to: their email, else student number, else name."""
-    return identity_key(rsvp.get("email", ""), rsvp.get("student_number", ""), rsvp.get("full_name", ""))
+def is_yes(value: str) -> bool:
+    """
+    >>> is_yes(" Yes, I agree")
+    True
+    >>> is_yes("")
+    False
+    """
+    return (value or "").strip().lower().startswith("yes")
+
+
+def is_ambiguous(reason: str) -> bool:
+    """
+    Whether an unverified RSVP failed because more than one student matches it (a shared name).
+
+    >>> is_ambiguous("name shared by 2 students; a student number is needed"), is_ambiguous("name not found")
+    (True, False)
+    """
+    return "shared by" in (reason or "")
+
+
+def review_flags(rsvp: dict, match_method: str, reason: str) -> str:
+    flags = []
+    if match_method == METHOD_NAME:
+        flags.append("name_only_match")
+    if is_ambiguous(reason):
+        flags.append("ambiguous_name")
+    if not is_yes(rsvp.get("data_confirmation", "")):
+        flags.append("no_data_confirmation")
+    if not rsvp.get("email"):
+        flags.append("no_uoft_email")
+    return ";".join(flags)
+
+
+def verify_rsvps(rsvps: list[dict], cursor: sqlite3.Cursor) -> tuple[list[dict], list[dict]]:
+    """
+    Verify RSVPs (one per person) against uoft_data, by name, student number or both. Sets uoft_uuid,
+    verification_level, match_method, reason, status and flags on each and returns (verified, unverified).
+    """
+    verified, unverified = [], []
+    for rsvp, match in zip(rsvps, match_students(rsvps, cursor, id_key="student_number")):
+        rsvp.update(uoft_uuid=match.uoft_uuid, verification_level=match.level, match_method=match.method,
+                    reason=match.reason, status="verified" if match.verified else "unverified",
+                    flags=review_flags(rsvp, match.method, match.reason))
+        (verified if match.verified else unverified).append(rsvp)
+        if not match.verified:
+            logger.warning(f"UNVERIFIED AGM RSVP {rsvp['uuid']}: {match.reason}")
+            if is_ambiguous(match.reason):
+                logger.warning(f"AMBIGUOUS AGM RSVP {rsvp['uuid']}: more than one student matches ({match.reason}). "
+                               f"A person has to decide which student this is.")
+    return verified, unverified
 
 
 def is_in_person(meeting_preference: str) -> bool:
@@ -81,7 +136,7 @@ def build_rsvp(row: dict[str, str]) -> dict:
 
 def read_rsvps(csv_file: Path) -> list[dict]:
     mapping = absfile("data/conversion_table_agm.csv")
-    reader = setup_reader(csv_file, mapping, optional=("first_name", "last_name"), identity=IDENTITY_COLUMNS)
+    reader = setup_reader(csv_file, mapping, optional=IDENTITY_COLUMNS, identity=IDENTITY_COLUMNS)
     fields = mapped_names(mapping) + ["Student Number", "Division"]
     rsvps = []
     for row in reader:
@@ -91,12 +146,24 @@ def read_rsvps(csv_file: Path) -> list[dict]:
     return dedupe_by_uuid([r for r in rsvps if r["full_name"] or r["student_number"]])
 
 
-def current_rsvps(rsvps: list[dict]) -> list[dict]:
+def verify_file(csv_file: Path | str, cursor: sqlite3.Cursor, output_dir: Path | str) -> list[dict]:
     """
-    The binding RSVP per person (see incremental.select_current): the newest verified one, so an unverified
-    RSVP never replaces a verified one; with none verified, the newest. Needs each RSVP's status to be set.
+    Read an RSVP export, verify it and write agm_verification.csv (private: names and emails) to output_dir, with
+    the binding RSVP per person (see incremental.select_current). Returns those RSVPs. Nothing is saved.
     """
-    return select_current(rsvps, person_key, submission_rank)[0]
+    cursor.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'uoft_data'")
+    if not cursor.fetchone():
+        raise ValueError("The database has no uoft_data table; import the UofT student data first")
+    rsvps = read_rsvps(Path(csv_file))
+    verified, unverified = verify_rsvps(rsvps, cursor)
+    current = select_current(rsvps)[0]
+
+    out = Path(absfile(output_dir))
+    out.mkdir(parents=True, exist_ok=True)
+    write_rows(out / "agm_verification.csv", REPORT_FIELDS, current)
+    logger.info(f"AGM verification: {len(verified)} verified, {len(unverified)} unverified of {len(rsvps)} RSVPs "
+                f"({len(current)} binding); report in {out / 'agm_verification.csv'}")
+    return current
 
 
 def attendee_list(verified: list[dict], in_person_only: bool = False) -> list[dict]:
@@ -119,26 +186,12 @@ ON CONFLICT(uuid) DO UPDATE SET student_uuid = excluded.student_uuid, uoft_uuid 
 
 
 def ensure_schema(conn: sqlite3.Connection):
-    conn.executescript(Path(absfile("src/schema/agm.sql")).read_text(encoding="utf-8"))
-    add_missing_columns(conn, "agm_rsvp", {**TRACKING_SQL_TYPES, **OUTCOME_SQL_TYPES})
-
-
-def save_to_db(conn: sqlite3.Connection, rsvps: list[dict]):
-    """Add (or refresh) one agm_rsvp row per RSVP. No names or contact details are stored."""
-    ensure_schema(conn)
-    conn.executemany(_UPSERT, rsvps)
-    conn.commit()
-    logger.info(f"Saved {len(rsvps)} RSVP row(s) to agm_rsvp")
+    ensure_tracked_table(conn, "src/schema/agm.sql", "agm_rsvp")
 
 
 def write_csv(rows: list[dict], fields: list[str], path: Path):
-    """Write rows to a CSV, with the meeting preference shown simply as In-person / Virtual / Not stated."""
-    shown = [{**r, "meeting_preference": attendance(r.get("meeting_preference", ""))} for r in rows]
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = SafeDictWriter(f, fieldnames=fields, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(shown)
-    logger.info(f"Wrote {len(rows)} rows to {path}")
+    """Write rows to a CSV, with the meeting preference shown simply as In-person / Virtual."""
+    write_rows(path, fields, [{**r, "meeting_preference": attendance(r.get("meeting_preference", ""))} for r in rows])
 
 
 def _tally(values) -> dict[str, int]:
@@ -172,24 +225,15 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
 
     rsvps = read_rsvps(Path(csv_file))
     ensure_schema(conn)
-    known = known_rows(conn, "agm_rsvp", ("reason", "flags"))
-    to_check = apply_known(rsvps, known, reverify)
-    changed = changed_after_processing(rsvps, known, "AGM")
-    released = restored_after_processing(rsvps, known)
-    verify_rsvps(to_check, conn.cursor())
-    current, statuses = select_current(rsvps, person_key, submission_rank)
-    logger.info(f"{len(rsvps)} AGM RSVPs read; {count_new(rsvps, known)} new, {len(to_check)} verified now, "
-                f"{len(changed)} changed since processed; {len(current)} binding after "
-                f"{sum(s == 'superseded' for s in statuses.values())} superseded and "
-                f"{sum(s == 'non_binding' for s in statuses.values())} non-binding")
-    unverified = [r for r in current if r["status"] == "unverified"]
+    run = Run(conn, "agm_rsvp", "AGM", "agm", rsvps, reverify, stored_columns=("reason", "flags"))
+    verify_rsvps(run.to_check, conn.cursor())
+    run.select()
+    unverified = [r for r in run.current if r["status"] == "unverified"]
 
-    save_to_db(conn, [r for r in dedupe_by_uuid(to_check + current) if r["uuid"] not in changed])
-    set_statuses(conn, "agm_rsvp", statuses)
-    record_invalid(conn, "agm_rsvp", changed, released)
-    duplicates = duplicate_verified(conn, "agm_rsvp", "AGM")
+    conn.executemany(_UPSERT, run.to_save())
+    run.settle()
     # an invalid (held) RSVP stays verified but is left out of the attendee lists until a person resolves it
-    verified, held = hold([r for r in current if r["status"] == "verified"])
+    verified, held = hold([r for r in run.current if r["status"] == "verified"])
     everyone, in_person = attendee_list(verified), attendee_list(verified, in_person_only=True)
     write_csv(everyone, LIST_FIELDS, out / "agm_list_all.csv")
     write_csv(in_person, LIST_FIELDS, out / "agm_list_in_person.csv")
@@ -198,30 +242,48 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
               out / "agm_accommodations.csv")
     # an RSVP that more than one student fits cannot be verified: raise it for a person, every run until resolved
     ambiguous = [r for r in unverified if is_ambiguous(r.get("reason", ""))]
-    alerts = build_alerts(conn, "agm_rsvp", "AGM", rsvps, statuses, duplicates, ambiguous)
-    write_alerts(out, "agm", alerts)
+    alerts = run.alert(out, ambiguous)
 
-    summary = {"submissions_in_export": len(rsvps),
-               "new_submissions_this_run": count_new(rsvps, known),
-               "processed_this_run": len(to_check),
-               "binding_rsvps": len(current),
+    summary = {**run.summary(held, alerts),
+               "binding_rsvps": len(run.current),
                "verified_rsvps": len(verified), "verified_in_person": len(in_person),
-               "unverified_rsvps": len(unverified), "changed_after_processing": len(changed),
-               "held_invalid": len(held), "ambiguous_matches": len(ambiguous), "alerts": len(alerts),
-               "integrity_duplicates": len(duplicates),
-               "non_binding": sum(s == "non_binding" for s in statuses.values()),
+               "unverified_rsvps": len(unverified), "ambiguous_matches": len(ambiguous),
                "attendance": _tally(attendance(r.get("meeting_preference", "")) for r in verified),
                "match_method": _tally(r["match_method"] for r in verified),
                "unverified_reasons": _tally(r["reason"] for r in unverified),
                "dietary_requests": sum(bool(r.get("dietary")) for r in verified),
                "accessibility_requests": sum(bool(r.get("accessibility")) for r in verified),
-               "flags": _tally(f for r in current for f in (r.get("flags") or "").split(";") if f)}
+               "flags": _tally(f for r in run.current for f in (r.get("flags") or "").split(";") if f)}
     (out / "agm_run.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     logger.info(f"AGM: {len(verified)} verified ({len(in_person)} in person), {len(unverified)} unverified")
     return {"verified": verified, "in_person": in_person, "unverified": unverified, "held": held, "alerts": alerts,
             "ambiguous": ambiguous, "summary": summary}
 
 
+def main():
+    parser = argparse.ArgumentParser(description="Verify AGM voter RSVPs against the UofT student data")
+    parser.add_argument("--agm_file", default="", help="AGM voter RSVP export (CSV)")
+    parser.add_argument("--db", default="", help="Database holding the uoft_data table")
+    parser.add_argument("--output_dir", default="secrets/output", help="Where agm_verification.csv is written")
+    parser.add_argument("--testing", action="store_true",
+                        help="Use testing/output/fake_agm.csv and the database from the last `main --testing` run")
+    args = parser.parse_args()
+    if args.testing:
+        args.agm_file = args.agm_file or "testing/output/fake_agm.csv"
+        args.db = args.db or "testing/output/test.sqlite"
+        args.output_dir = "testing/output" if args.output_dir == "secrets/output" else args.output_dir
+    if not args.agm_file or not args.db:
+        parser.error("--agm_file and --db are required (or use --testing)")
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+    conn = sqlite3.connect(absfile(args.db))
+    try:
+        rows = verify_file(absfile(args.agm_file), conn.cursor(), args.output_dir)
+    finally:
+        conn.close()
+    verified = sum(r["status"] == "verified" for r in rows)
+    print(f"{verified} verified, {len(rows) - verified} unverified of {len(rows)} RSVPs")
+
+
 if __name__ == "__main__":
-    import doctest
-    doctest.testmod()
+    main()

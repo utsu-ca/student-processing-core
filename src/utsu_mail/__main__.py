@@ -6,7 +6,6 @@ Mail-merge CLI. Run from the `src` directory:
     python -m utsu_mail senate_verified --recipients secrets/output/verified.csv
 """
 import argparse
-import dataclasses
 import getpass
 import logging
 import os

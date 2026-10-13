@@ -2,8 +2,12 @@
 import hashlib
 import json
 import logging
+import re
 import sqlite3
+from datetime import datetime
 from typing import Callable
+
+from utsu_std.utils import identity_key
 
 logger = logging.getLogger(__name__)
 
@@ -123,12 +127,47 @@ def dedupe_by_uuid(rows: list[dict]) -> list[dict]:
     return list(latest.values())
 
 
-def select_current(rows: list[dict], key_fn: Callable[[dict], str], rank_fn: Callable[[dict], object]
-                   ) -> tuple[list[dict], dict[str, str]]:
+def parse_submission_ts(value: str) -> datetime | None:
     """
-    Choose the one binding application per student (`key_fn`; `rank_fn` orders submissions, oldest first) among the
-    rows whose status is verified or unverified. Returns (current rows in their original order, {uuid: new
-    status} for the rows that lost).
+    Parse a form timestamp such as '2026/08/14 1:30:47 p.m. AST'. The timezone label is ignored.
+
+    >>> parse_submission_ts("2026/08/14 1:30:47 p.m. AST")
+    datetime.datetime(2026, 8, 14, 13, 30, 47)
+    >>> parse_submission_ts("2026/08/14 12:05:00 a.m. AST")
+    datetime.datetime(2026, 8, 14, 0, 5)
+    >>> parse_submission_ts("garbage") is None
+    True
+    """
+    m = re.match(r"\s*(\d{4}/\d{2}/\d{2})\s+(\d{1,2}:\d{2}:\d{2})\s*([ap])\.?m\.?", value or "", re.I)
+    if not m:
+        return None
+    date, time, meridiem = m.groups()
+    return datetime.strptime(f"{date} {time} {meridiem.upper()}M", "%Y/%m/%d %I:%M:%S %p")
+
+
+def submission_rank(row: dict) -> datetime:
+    """When a row was submitted, for deciding which of a person's submissions is the newest (unreadable: oldest)."""
+    return parse_submission_ts(row.get("submission_ts", "")) or datetime.min
+
+
+def person_key(row: dict) -> str:
+    """
+    Whose submission a row is: their email, else student number (`id` or `student_number`), else name, so
+    all of a person's submissions are grouped together (see utsu_std.utils.identity_key).
+
+    >>> person_key({"email": "A@x.ca", "id": "1"}) == person_key({"email": "a@x.ca", "student_number": "2"})
+    True
+    """
+    return identity_key(row.get("email", ""), row.get("id") or row.get("student_number") or "",
+                        row.get("full_name", ""))
+
+
+def select_current(rows: list[dict], key_fn: Callable[[dict], str] = person_key,
+                   rank_fn: Callable[[dict], object] = submission_rank) -> tuple[list[dict], dict[str, str]]:
+    """
+    Choose the one binding application per person (`key_fn`, by default their email, else student number, else
+    name; `rank_fn` orders submissions, by default by timestamp, oldest first) among the rows whose status is
+    verified or unverified. Returns (current rows in their original order, {uuid: new status} for the rows that lost).
 
     The newest *verified* application wins, so an unverified submission can never replace a verified one: it becomes
     `non_binding` (and is logged, since someone may be impersonating the student). Without any verified application
@@ -180,7 +219,3 @@ def set_statuses(conn: sqlite3.Connection, table: str, changes: dict[str, str]) 
                          [status, status, *chunk])
     conn.commit()
 
-
-def mark_superseded(conn: sqlite3.Connection, table: str, uuids) -> None:
-    """Flag older submissions that a newer one from the same student has replaced."""
-    set_statuses(conn, table, {u: "superseded" for u in uuids})

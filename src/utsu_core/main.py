@@ -1,24 +1,18 @@
 import argparse
-import csv
 import logging
-import sqlite3
 import sys
 from pathlib import Path
 
-from utsu_core.importing_data import import_uoft_data, preprocess_uoft_csv
+from utsu_core.importing_data import import_uoft_data
 from utsu_core.integrity import resolve_invalid
 from utsu_core.senate import verify_senators
 from utsu_core.agm import process_agm
 from utsu_core.sap import issue_batches, merge_reviews, process_sap, record_decisions
 from utsu_core.seating import run_seating
-from utsu_core.verification import bulk_check_for_students
 from utsu_std.database import backup_database, get_connection
-from utsu_std.utils import absfile, normalize_case, setup_logging, load_and_merge_config
-from utsu_std.parsing_utils import get_trunc_id, normalize_name
+from utsu_std.utils import absfile, setup_logging, load_and_merge_config
 
 logger = logging.getLogger(__name__)
-
-PROGRAMS = ['senate', 'sabp', 'agm']
 
 def main(cfg):
     # keep a timestamped copy of the database from before this run changes it

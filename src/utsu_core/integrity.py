@@ -18,7 +18,7 @@ import sqlite3
 from pathlib import Path
 
 from utsu_core.incremental import CHANGED_FLAG, LOCKED, _changed, add_flag
-from utsu_std.csv_safe import SafeDictWriter
+from utsu_std.csv_safe import write_rows
 
 logger = logging.getLogger("utsu.integrity")
 
@@ -145,10 +145,7 @@ def build_alerts(conn: sqlite3.Connection, table: str, program: str, rows: list[
 def write_alerts(output_dir: Path, name: str, alerts: list[dict]) -> Path:
     """Write `alerts_<name>.csv` (header only when there is nothing to look at)."""
     path = Path(output_dir) / f"alerts_{name}.csv"
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = SafeDictWriter(f, fieldnames=ALERT_FIELDS)
-        writer.writeheader()
-        writer.writerows(alerts)
+    write_rows(path, ALERT_FIELDS, alerts, extrasaction="raise")
     if alerts:
         logger.warning(f"{len(alerts)} alert(s) for a person to look at in {path}")
     return path

@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 import re
 from contextlib import closing
 from datetime import datetime
@@ -6,8 +6,7 @@ from pathlib import Path
 import sqlite3
 import csv
 
-from utsu_std.utils import absfile, generate_uuid, normalize_case
-from utsu_std.parsing_utils import get_uoft_trunc_format, get_trunc_id
+from utsu_std.utils import absfile
 
 logger = logging.getLogger(__name__)
 
@@ -65,77 +64,3 @@ def import_csv_to_db(csv_file: Path, table_name: str, conn: sqlite3.Connection):
         conn.rollback()
         raise e
 
-def export_db_to_csv(table_name: str, csv_file: Path, conn: sqlite3.Connection):
-    try:
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT * FROM {table_name}")
-        rows = cursor.fetchall()
-        headers = [description[0] for description in cursor.description]
-
-        with open(csv_file, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(headers)
-            writer.writerows(rows)
-
-        logger.info(f"Data exported successfully from {table_name} to {csv_file}")
-    except Exception as e:
-        logger.error(f"An error occurred: {e}")
-
-def return_unique_values(table_name: str, column_name: str, conn: sqlite3.Connection):
-    try:
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT DISTINCT {column_name} FROM {table_name}")
-        rows = cursor.fetchall()
-        return [row[0] for row in rows]
-    except Exception as e:
-        logger.error(f"An error occurred: {e}")
-        return []
-
-def return_all_values(table_name: str, column_name: str, conn: sqlite3.Connection):
-    try:
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT {column_name} FROM {table_name}")
-        rows = cursor.fetchall()
-        return [row[0] for row in rows]
-    except Exception as e:
-        logger.error(f"An error occurred: {e}")
-        return []
-
-def check_for_student(student: dict[str, str], cursor: sqlite3.Cursor):
-    """
-    Verify the provided student information against the stored database records.
-
-    Args:
-        cursor (Cursor): The database cursor to execute queries against.
-        student (dict[str, str]): The student object containing the student's information to be verified.
-        The student dictionary should contain the following keys:
-            - "id" (optional): The full student ID.
-            - "trun_id" (optional): The truncated student ID derived from the full ID.
-            - "first_name": The student's first name.
-            - "last_name": The student's last name.
-
-    Returns:
-        bool: True if the student information matches any stored records, False otherwise.
-    """
-
-    keys = student.keys()
-
-    # check if id is supplied and derive trunc_id
-    if "id" in keys and "trun_id" not in keys:
-        student["trun_id"] = get_uoft_trunc_format(student["id"])
-
-    # Ensure that the required student information fields are present
-    required_fields = {"trun_id", "first_name", "last_name"}
-    # Use subset math to determine if any required fields are missing
-    if not required_fields.issubset(keys):
-        missing_fields = required_fields - keys
-        for field in missing_fields:
-            logger.error(f"{field.replace('_', ' ').title()} is missing from the provided student information.")
-        return False
-
-    # query the database for the student information based on the required fields
-    query = "SELECT * FROM students WHERE trun_id = ? AND first_name = ? AND last_name = ?"
-    cursor.execute(query, (student["trun_id"], student["first_name"], student["last_name"]))
-    matches = cursor.fetchall()
-
-    return {"result": matches.__len__() == 1, "matches": matches}

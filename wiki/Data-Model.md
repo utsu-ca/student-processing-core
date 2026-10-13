@@ -40,7 +40,7 @@ Indexes: `idx_full_name`, `idx_trunc_id`. Required roster CSV columns: `First Na
 | `student_uuid` | `student:<key type>:<uuid>` |
 | `uoft_uuid` | matching `uoft_data.uuid`, NULL when unverified |
 | `verification_level` | 1 / 2 / 3 ([levels](Identity-and-Verification#verification-levels-at-a-glance)) |
-| `match_method` | `name only`, `student number only`, `name + student number` |
+| `match_method` | `name only`, `name + student number`, `name + division`, `name + student number + division` |
 | `status` | `verified`, `unverified`, `superseded`, `non_binding`, `not_considered` |
 | `submission_ts` | the form timestamp as given |
 | `source_hash` | fingerprint of the form row as processed; NULLed by `--resolve_invalid` |

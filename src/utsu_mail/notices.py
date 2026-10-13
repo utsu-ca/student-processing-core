@@ -25,7 +25,7 @@ from pathlib import Path
 
 from utsu_core.verification import match_students
 from utsu_mail.recipients import read_csv
-from utsu_std.csv_safe import SafeDictWriter
+from utsu_std.csv_safe import write_rows
 from utsu_std.utils import absfile, load_config_file, student_uuid_for
 
 logger = logging.getLogger("utsu_mail.notices")
@@ -40,10 +40,9 @@ DIVISION_FIELD = "- Division (as it appears on your ACORN registration)"
 def diagnose(app: dict[str, str], cursor: sqlite3.Cursor) -> tuple[str, list[str]]:
     """
     Compare an application with uoft_data. Returns (student_uuid, details that could not be verified).
-    Works with whatever the application gave: a name, a student number, a division, or several. The name is
-    blamed when it is not in uoft_data, the student number when it does not belong to the name (or is not in
-    uoft_data), the division when it does not match the student, and the missing one of name and number when a
-    shared name or number cannot be decided alone.
+    Works with a name plus, optionally, a student number and a division. The name is blamed when it is not in
+    uoft_data or missing, the student number when it does not belong to the name, the division when it does not
+    match the student, and the student number when a shared name cannot be decided without one.
     """
     number = (app.get("id") or app.get("student_number") or "").strip()
     name = app.get("full_name", "")
@@ -54,17 +53,11 @@ def diagnose(app: dict[str, str], cursor: sqlite3.Cursor) -> tuple[str, list[str
         return student, []
 
     reason = match.reason
-    if reason == "name not found":
-        fields = [NAME_FIELD]
-        if number and match_students([{"id": number}], cursor)[0].reason == "student number not found":
-            fields.append(NUMBER_FIELD)
-    elif reason == "division does not match":
+    if reason == "division does not match":
         fields = [DIVISION_FIELD]
-    elif reason.startswith("student number shared") or reason.startswith("name has no plain letters"):
+    elif reason == "name not found" or reason == "no name given" or reason.startswith("name has no plain letters"):
         fields = [NAME_FIELD]
-    elif reason == "no name or student number given":
-        fields = [NAME_FIELD, NUMBER_FIELD]
-    else:  # a student number that does not match, is not found, or a name shared by several students
+    else:  # a student number that does not match, or a name shared by several students
         fields = [NUMBER_FIELD]
     return student, fields
 
@@ -88,11 +81,7 @@ def build_notices(rows: list[dict[str, str]], cursor: sqlite3.Cursor, kind: str,
 
 def write_notices(path: Path, notices: list[dict[str, str]]):
     path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = list(dict.fromkeys(k for n in notices for k in n))
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = SafeDictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(notices)
+    write_rows(path, list(dict.fromkeys(k for n in notices for k in n)), notices, extrasaction="raise")
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -10,7 +10,7 @@ from test_agm import form_csv as agm_form, rsvp, students_db
 from test_sap import AP_ROW, LC_ROW, form_csv as sap_form
 from utsu_core import agm, integrity, sap, senate
 from utsu_core import verification
-from utsu_core.incremental import apply_known, count_new, mark_superseded, select_current
+from utsu_core.incremental import apply_known, count_new, select_current, set_statuses
 from utsu_core.integrity import changed_after_processing, duplicate_verified
 from utsu_std.utils import absfile
 
@@ -345,9 +345,9 @@ def test_senate_update_verifies_only_new_applications(tmp_path, monkeypatch):
     assert r3["new"] == 0 and seen[-1] == [] and r3["changed"] == []
 
 
-def test_mark_superseded_handles_many_ids():
+def test_set_statuses_handles_many_ids():
     conn = sqlite3.connect(":memory:")
     conn.execute("CREATE TABLE t (uuid TEXT PRIMARY KEY, status TEXT)")
     conn.executemany("INSERT INTO t VALUES (?, 'verified')", [(str(i),) for i in range(1200)])
-    mark_superseded(conn, "t", [str(i) for i in range(1100)])
+    set_statuses(conn, "t", {str(i): "superseded" for i in range(1100)})
     assert conn.execute("SELECT COUNT(*) FROM t WHERE status = 'superseded'").fetchone() == (1100,)

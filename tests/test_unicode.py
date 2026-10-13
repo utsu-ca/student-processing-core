@@ -65,18 +65,17 @@ def test_text_that_is_not_text_does_not_crash():
     "xxxxx3971x", "3971", "\uff13\uff19\uff17\uff11",
 ])
 def test_a_student_number_gives_the_same_four_digits_however_it_was_typed(number):
-    assert verification.trunc_of(number) == 3971
+    assert get_trunc_id(number) == 3971
 
 
 def test_digits_of_other_scripts_are_not_supported():
     arabic_indic = "\u0661\u0660\u0660\u0666\u0666\u0663\u0669\u0667\u0661\u0665"
-    assert verification.trunc_of(arabic_indic) is None
+    assert get_trunc_id(arabic_indic) is None
 
 
 @pytest.mark.parametrize("number", ["10066397\u00b215", "12\u00b3", "\u2460\u2461\u2462\u2463\u2464\u2465\u2466\u2467\u2468",
                                     "abc", "\U0001f600" * 10, "\ud800" * 10])
 def test_nonsense_numbers_never_crash(number):
-    verification.trunc_of(number)
     get_trunc_id(number)
 
 

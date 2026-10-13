@@ -59,7 +59,7 @@ If a verified application's form row is edited after it was processed, the integ
 logs an `INTEGRITY` error on every run. The application **stays in progress** (status and stage do not change, it keeps
 its result) but goes no further. It is left out of:
 
-- SABP review batches, the merge of reviewer ratings, recording decisions, physical check-in;
+- SABP review batches, the merge of reviewer ratings, recording decisions;
 - Senate `verified.csv` (and therefore the seating);
 - the AGM attendee lists.
 

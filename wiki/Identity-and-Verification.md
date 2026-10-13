@@ -31,25 +31,30 @@ Things to know:
 ## How a person is matched to the roster
 
 The roster (`uoft_data`) stores **only the last 4 digits** of the student number, plus name, faculty and division.
-Each application is matched using whatever it gives (a form may omit either column; at least one must exist):
+Each application is matched on its **name** (always needed), plus its student number and division when it gives them. The
+last four digits of a student number are shared by many students, so a number or a division alone never identifies
+anyone: they only narrow down the people with that name. There are three factors: **name, student number, division**.
+Every factor given must agree with the same student (a wrong value never falls back to another factor) and the level is
+the number of factors that matched:
 
-| Given | Matches when | `verification_level` | `match_method` |
-|---|---|---|---|
-| name + student number | both belong to the same roster student (a wrong number never falls back to the name) | **2** | `name + student number` |
-| name only | the name belongs to exactly **one** student | **1** | `name only` |
-| student number only | the 4-digit number belongs to exactly **one** student | **1** | `student number only` |
-| + checked in person | recorded with `--record_physical` | **3** | |
+| Factors that matched | `verification_level` | `match_method` |
+|---|---|---|
+| name | **1** | `name only` |
+| name + student number, or name + division | **2** | `name + student number`, `name + division` |
+| all three | **3** | `name + student number + division` |
+
+The roster's division is its `division`, or its `faculty` when the division is
+blank, and is compared as a code (`UC - University College` is `UC`). The SABP form has no division (maximum level 2).
 
 Reasons an application stays `unverified`:
 
 | Reason | Meaning |
 |---|---|
 | `name not found` | no roster student has that (normalized) name |
+| `no name given` | the row has no name (a student number alone is never matched) |
 | `student number does not match` | name exists, but none of those students has that last-4 |
-| `name shared by N students; a student number is needed` | name only, several students |
-| `student number not found` | number only, nobody has it |
-| `student number shared by N students; a name is needed` | number only, several students |
-| `no name or student number given` | nothing to match on |
+| `division does not match` | the matched student is in a different division |
+| `name shared by N students; a student number is needed` | name only, several students (AGM raises an alert) |
 | `name has no plain letters (only A-Z letters are supported)` | the name was entirely non-ASCII |
 
 The student number accepted can be a full 10-digit number, the `xxxxx3971x` truncated form, or just the 4 digits.
@@ -57,24 +62,11 @@ Unreadable numbers are simply "not a match", never a crash.
 
 ### Verification levels at a glance
 
-- **Level 1**: one factor. Weakest; flagged in AGM as `name_only_match` / `student_number_only_match`.
-- **Level 2**: name + last four digits.
-- **Level 3**: level 2 plus a person checked them in. Never goes down on reprocessing.
+- **Level 1**: the name alone. Weakest; flagged in AGM as `name_only_match`.
+- **Level 2**: the name plus a student number or a division.
+- **Level 3**: name, student number and division.
 
-## Physical verification
-
-```powershell
-python -m utsu_core.main --record_physical door.csv
-```
-
-`door.csv` needs one way to find each student: `student_uuid`, `email`, `student_number` (or `id`), or `full_name`. An
-optional `checked_in` (or `physical`) column limits it to rows that say yes (blank, `no`, `n`, `0`, `false` are skipped), so
-a filled-in `agm_list_all.csv` works as it is. Note that the exported `checked_in` column is **blank** until
-someone fills it in; a file where every row is blank records nothing.
-
-The student is looked up by the same key the application was filed under (email, else student number, else name). All
-their **verified, non-held level-2** applications in all three programs are raised to level 3. A student with no
-verified application, or only level 1, is reported and left as they are.
+Physical (in-person) verification was removed; the division level replaces it.
 
 ## Text cleaning (ASCII only)
 

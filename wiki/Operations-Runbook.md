@@ -65,7 +65,8 @@ If the roster itself changed: add `--reimport_uoft_data` (this verifies everythi
 
 1. Run with `--agm_file`. Hand out `agm_list_all.csv` (or `agm_list_in_person.csv`) to the door team and
    `agm_accommodations.csv` (no names) to the organizers.
-2. After check-in, fill the `checked_in` column with `yes` and run `--record_physical <file>`.
+2. Check `alerts_agm.csv` for `ambiguous_match` warnings (an RSVP that fits more than one student) and fix those rows
+   with a student number or division.
 
 ## 7. Emails
 

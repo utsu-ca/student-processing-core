@@ -72,6 +72,15 @@ class SafeDictWriter(csv.DictWriter):
             self.writerow(rowdict)
 
 
+def write_rows(path, fields, rows, extrasaction: str = "ignore") -> None:
+    """Write dict rows to a CSV (a header, then every cell made safe). Columns not in `fields` are left out."""
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = SafeDictWriter(f, fieldnames=fields, extrasaction=extrasaction)
+        writer.writeheader()
+        writer.writerows(rows)
+    logger.info(f"Wrote {len(rows)} rows to {path}")
+
+
 class SafeWriter:
     """`csv.writer` that makes every cell safe."""
 

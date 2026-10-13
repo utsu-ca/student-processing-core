@@ -43,7 +43,7 @@ In testing mode `config.json` is neither read nor written, and a fresh database 
 `--seed` or `--seats_file` still override the testing defaults. Reviewers `Reviewer_A,Reviewer_B,Reviewer_C` are
 assigned automatically.
 
-One-off actions (`--merge_reviews`, `--issue_batches`, `--record_decisions`, `--record_physical`, `--resolve_invalid`)
+One-off actions (`--merge_reviews`, `--issue_batches`, `--record_decisions`, `--resolve_invalid`)
 combined with `--testing` do **not** rebuild the fake data or the database; they work on the last testing run's:
 
 ```powershell

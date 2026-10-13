@@ -59,7 +59,7 @@ says what complete means.)
 processed, the integrity check (`utsu_core/integrity.py`, separate from the processing above) marks it *invalid*
 (`invalid_reason`, flag `invalid`) and logs an `INTEGRITY` error on every run. It **stays in progress**: its status
 and stage do not change and it keeps its earlier result. But it goes no further: it is left out of the SABP review
-batches, the merge of reviewer ratings, the recording of decisions and of physical checks, the Senate `verified.csv`
+batches, the merge of reviewer ratings, the recording of decisions, the Senate `verified.csv`
 (and so the seating) and the AGM attendee lists. A person decides:
 
 - put the row back as it was: the hold is released by itself on the next run; or
@@ -98,31 +98,28 @@ The email is typed by the applicant and not checked, so someone could submit usi
 replace a verified application: a new submission with the student's email only becomes binding if it is itself verified.
 Someone who also knows the student's name and number would still pass; the warnings in the log are the way to notice.
 
-**Verification works with a name, a student number, or both.** Each application is matched against `uoft_data` using
-whatever it gives (a form may omit either column; at least one must exist):
+**Verification needs a name; the student number and the division only narrow it down.** The roster keeps just the last
+four digits of a student number, which many students share, so a number (or a division) alone never identifies anyone.
+Each application is matched against `uoft_data` on its name, plus its student number and division when it gives them (a
+form must have a name column; the number and division columns are optional). Every factor given must agree with the
+same student, and a wrong value never falls back to another factor. The `verification_level` is the number of factors
+that matched:
 
-| given | matches when | `verification_level` | `match_method` |
-|---|---|---|---|
-| name + student number | both belong to the same student (a wrong number never falls back to the name) | 2 | `name + student number` |
-| name only | the name belongs to exactly one student | 1 | `name only` |
-| student number only | the (4-digit) number belongs to exactly one student | 1 | `student number only` |
-| + checked in person | `--record_physical` (below) | 3 | |
+| factors that matched | `verification_level` | `match_method` |
+|---|---|---|
+| name | 1 | `name only` |
+| name + student number, or name + division | 2 | `name + student number`, `name + division` |
+| name + student number + division | 3 | `name + student number + division` |
+
+The roster's division is its `division`, or its `faculty` when the division is blank
+(the Senate form's divisional codes are colleges and faculties), compared as a code (`UC - University College` is `UC`).
+The SABP form has no division, so its highest level is 2. A row that has a student number but no name is kept, left
+`unverified` (`no name given`) and asked for its name.
 
 The matching `uoft_data.uuid` is stored in `uoft_uuid` and the level in `verification_level`, on each application row
 (`senate_application`, `student_aid`, `agm_rsvp`), next to the email-based `student_uuid`. An application that cannot
-be decided stays `unverified` with a reason (`name not found`, `student number does not match`, `name shared by N
-students; a student number is needed`, ...).
-
-**Physical verification.** List the students who were checked in person (a CSV with `email`, `student_number` or
-`full_name`, or the `student_uuid`; an optional `checked_in` column limits it to the rows that say yes, so a filled-in
-`agm_list_all.csv` works as it is):
-
-```
-python -m utsu_core.main --record_physical door.csv
-```
-
-This raises that student's level-2 applications to level 3. A student with no verified application, or only level 1
-(a name or a number alone), is reported and left as they are; level 3 never goes down on reprocessing.
+be decided stays `unverified` with a reason (`name not found`, `no name given`, `student number does not match`,
+`division does not match`, `name shared by N students; a student number is needed`, ...).
 
 **Backups.** Every run that uses a database first copies it to `<database folder>/backups/<name>_<YYYYmmdd-HHMMSS>.sqlite`
 (SQLite's backup, so the copy is consistent). `--backup_dir DIR` changes the folder, `--keep_backups N` keeps only the
@@ -257,15 +254,20 @@ python -m utsu_core.main --program agm --agm_file "path/to/RSVP.csv"
 
 - the form may have **no student number**, so people are then matched on their ACORN-registered name alone
   (`name_only_match` flag, level 1). A name shared by several students stays unverified (`name shared by N students`)
-  until the form adds a `Student Number` column, which is then used automatically (`name + student number`, level 2).
-  A row with a student number and no name is matched on the number alone (`student_number_only_match`);
+  until the form adds a `Student Number` or `Division` column, which is then used automatically (level 2 or 3).
+  The form must have the name columns; a student number alone never matches anyone;
+- **ambiguous cases are warned about.** An RSVP that fits more than one student is logged
+  (`AMBIGUOUS AGM RSVP ... more than one student matches`), flagged `ambiguous_name`,
+  counted as `ambiguous_matches` in `agm_run.json` and listed in `alerts_agm.csv` (kind `ambiguous_match`, severity
+  WARNING) on every run until it is resolved, e.g. by correcting the row with a student number or division. It is
+  never put on the door list;
 - every RSVP gets an `agm_rsvp` row (uuid, `student_uuid`, `uoft_uuid`, `verification_level`, status, reason, flags; no
   names or emails);
 - `<output_dir>` gets these files (all but `agm_accommodations.csv` carry names and emails: keep them private):
 
   | file | what is in it |
   |---|---|
-  | `agm_list_all.csv` | the **door list**: every verified attendee, sorted by last name. Columns `last_name, first_name, preferred_name, pronouns, email, meeting_preference, contact_ok, flags, verification_level, checked_in`. No ids. `meeting_preference` is just **`In-person`** or **`Virtual`**: anything that is not clearly in person, including a blank answer, is Virtual. `checked_in` is blank for the door (a filled-in list works with `--record_physical`) |
+  | `agm_list_all.csv` | the **door list**: every verified attendee, sorted by last name. Columns `last_name, first_name, preferred_name, pronouns, email, meeting_preference, contact_ok, flags, verification_level, checked_in`. No ids. `meeting_preference` is just **`In-person`** or **`Virtual`**: anything that is not clearly in person, including a blank answer, is Virtual. `checked_in` is a blank column for the door |
   | `agm_list_in_person.csv` | the same columns, only the people who are `In-person` |
   | `agm_unverified.csv` | RSVPs that could not be verified, with the `reason`; keeps the ids (`uuid`, `student_uuid`) the "more information" emails use |
   | `agm_accommodations.csv` | dietary and accessibility needs of verified attendees, by `uuid` only, no names (so a need cannot be traced to a person) |
@@ -282,12 +284,12 @@ python -m utsu_core.main --program agm --agm_file "path/to/RSVP.csv"
   `held_invalid`, `integrity_duplicates` and `alerts`. `sap_run.json` uses the same names (`binding_applications`,
   `verified_applications`, ...).
 
-**Verification on its own.** The verification lives in `utsu_core/agm_verify.py` and can be run without producing any
+**Verification on its own.** The same module (`utsu_core/agm.py`) can be run without producing any
 lists or database rows, to check an RSVP export against a database that already holds `uoft_data`:
 
 ```
-python -m utsu_core.agm_verify --agm_file "path/to/RSVP.csv" --db path/to/db.sqlite [--output_dir DIR]
-python -m utsu_core.agm_verify --testing     # testing/output/fake_agm.csv against the last `main --testing` database
+python -m utsu_core.agm --agm_file "path/to/RSVP.csv" --db path/to/db.sqlite [--output_dir DIR]
+python -m utsu_core.agm --testing     # testing/output/fake_agm.csv against the last `main --testing` database
 ```
 
 It writes `agm_verification.csv` (status, reason, match method and flags per person).
