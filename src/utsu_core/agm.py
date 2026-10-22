@@ -27,12 +27,13 @@ from utsu_core.pipeline import Run
 from utsu_core.verification import (MAX_CANDIDATES, METHOD_FUZZY_NAME, METHOD_NAME, Match, match_students,
                                     setup_reader)
 from utsu_std.csv_safe import check_writable, write_rows
-from utsu_std.utils import absfile, application_uuid_for, normalize_case, student_uuid_for
+from utsu_std.utils import (absfile, application_uuid_for, normalize_case, normalize_uoft_email, student_uuid_for,
+                            EMAIL_FLAGS)
 
 logger = logging.getLogger(__name__)
 
-LIST_FIELDS = ["last_name", "first_name", "preferred_name", "pronouns", "email", "meeting_preference", "contact_ok",
-               "flags", "verification_level", "checked_in"]
+LIST_FIELDS = ["last_name", "first_name", "student_number", "preferred_name", "pronouns", "email",
+               "meeting_preference", "contact_ok", "flags", "verification_level", "checked_in"]
 UNVERIFIED_FIELDS = ["uuid", "student_uuid", "reason", "submission_ts", "full_name", "student_number", "email",
                      "personal_email", "meeting_preference", "flags"]
 ACCOMMODATION_FIELDS = ["uuid", "meeting_preference", "dietary", "accessibility"]
@@ -114,6 +115,8 @@ def review_flags(rsvp: dict, match_method: str, reason: str, fuzzy_flag: str = "
         flags.append("no_data_confirmation")
     if not rsvp.get("email"):
         flags.append("no_uoft_email")
+    if rsvp.get("email_status") in EMAIL_FLAGS:
+        flags.append(EMAIL_FLAGS[rsvp["email_status"]])
     return ";".join(flags)
 
 
@@ -174,6 +177,7 @@ def build_rsvp(row: dict[str, str]) -> dict:
     rsvp["student_number"] = rsvp.get("Student Number", "")  # optional column, kept under its original header
     rsvp["division"] = rsvp.get("Division", "")  # optional column too; it takes part in the match when given
     rsvp["contact_ok"] = "yes" if is_yes(rsvp.get("contact_consent", "")) else "no"
+    rsvp["email"], rsvp["email_status"] = normalize_uoft_email(rsvp.get("email", ""))
     rsvp["uuid"] = agm_uuid(rsvp)
     rsvp["student_uuid"] = student_uuid_for(rsvp.get("email", ""), rsvp["student_number"], rsvp["full_name"])
     return rsvp
@@ -210,6 +214,26 @@ def attendee_list(verified: list[dict], in_person_only: bool = False) -> list[di
     """Verified attendees sorted by last then first name, for check-in; optionally only those attending in person."""
     rows = [r for r in verified if not in_person_only or is_in_person(r.get("meeting_preference", ""))]
     return sorted(rows, key=lambda r: (r.get("last_name", "").lower(), r.get("first_name", "").lower(), r["uuid"]))
+
+
+def truncated_numbers(cursor: sqlite3.Cursor, uoft_uuids) -> dict[str, str]:
+    """
+    The roster's truncated student number (`xxxxx3971x`) for each uoft_data uuid, read from the database. A uuid
+    that is not there, or has no number, is left out.
+    """
+    wanted = sorted({u for u in uoft_uuids if u})
+    found: dict[str, str] = {}
+    for start in range(0, len(wanted), 500):  # stay under SQLite's limit on query parameters
+        chunk = wanted[start:start + 500]
+        cursor.execute(f"SELECT uuid, trunc_id FROM uoft_data WHERE uuid IN ({','.join('?' * len(chunk))})", chunk)
+        found.update({u: f"xxxxx{t:04d}x" for u, t in cursor.fetchall() if t is not None})
+    return found
+
+
+def with_roster_numbers(rows: list[dict], cursor: sqlite3.Cursor) -> list[dict]:
+    """Copies of verified RSVPs whose student_number is the roster's truncated number, not what the form gave."""
+    numbers = truncated_numbers(cursor, (r.get("uoft_uuid") for r in rows))
+    return [{**r, "student_number": numbers.get(r.get("uoft_uuid"), "")} for r in rows]
 
 
 _INSERT = """
@@ -263,7 +287,8 @@ def fuzzy_review_rows(rsvps: list[dict]) -> list[dict]:
 def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path | str = "secrets/output") -> dict:
     """
     Process an AGM voter RSVP export and write, under output_dir:
-      agm_list_all.csv        every verified attendee (door list; no ids; meeting preference as In-person / Virtual)
+      agm_list_all.csv        every verified attendee (door list; no ids; meeting preference as In-person / Virtual;
+                              the truncated student number is read from uoft_data)
       agm_list_in_person.csv  verified attendees whose meeting preference is in person
       agm_unverified.csv      RSVPs that could not be verified, with the reason
       agm_fuzzy_review.csv    RSVPs matched (or nearly) on a close rather than exact first name, with the closest
@@ -301,8 +326,8 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     with_needs = [{**r, "dietary": real_need(r.get("dietary")), "accessibility": real_need(r.get("accessibility"))}
                   for r in everyone]
     with_needs = [r for r in with_needs if r["dietary"] or r["accessibility"]]
-    write_csv(everyone, LIST_FIELDS, files["agm_list_all.csv"])
-    write_csv(in_person, LIST_FIELDS, files["agm_list_in_person.csv"])
+    write_csv(with_roster_numbers(everyone, conn.cursor()), LIST_FIELDS, files["agm_list_all.csv"])
+    write_csv(with_roster_numbers(in_person, conn.cursor()), LIST_FIELDS, files["agm_list_in_person.csv"])
     write_csv(unverified, UNVERIFIED_FIELDS, files["agm_unverified.csv"])
     fuzzy_rows = fuzzy_review_rows(run.current)
     write_rows(files["agm_fuzzy_review.csv"], FUZZY_REVIEW_FIELDS, fuzzy_rows)
