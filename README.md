@@ -256,7 +256,7 @@ python -m utsu_core.main --program agm --agm_file "path/to/RSVP.csv"
 
   | file | what is in it |
   |---|---|
-  | `agm_list_all.csv` | the **door list**: every verified attendee, sorted by last name. Columns `last_name, first_name, preferred_name, pronouns, email, meeting_preference, contact_ok, flags, verification_level, checked_in`. No ids. `meeting_preference` is just **`In-person`** or **`Virtual`**: anything that is not clearly in person, including a blank answer, is Virtual. `checked_in` is a blank column for the door |
+  | `agm_list_all.csv` | the **door list**: every verified attendee, sorted by last name. Columns `last_name, first_name, student_number, preferred_name, pronouns, email, meeting_preference, contact_ok, flags, verification_level, checked_in`. `student_number` is the truncated number from `uoft_data`. `meeting_preference` is just **`In-person`** or **`Virtual`**: anything that is not clearly in person, including a blank answer, is Virtual. `checked_in` is a blank column for the door |
   | `agm_list_in_person.csv` | the same columns, only the people who are `In-person` |
   | `agm_unverified.csv` | RSVPs that could not be verified, with the `reason`; keeps the ids (`uuid`, `student_uuid`) the "more information" emails use |
   | `agm_accommodations.csv` | dietary and accessibility needs of verified attendees, by `uuid` only, no names; answers such as `None` or `N/A` are not needs and are left out |

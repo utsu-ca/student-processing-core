@@ -104,7 +104,7 @@ def test_door_lists_show_a_simple_attendance_and_no_ids(tmp_path):
 
     with open(out / "agm_list_all.csv", newline="", encoding="utf-8-sig") as f:
         rows = list(csv.DictReader(f))
-    assert list(rows[0]) == ["last_name", "first_name", "preferred_name", "pronouns", "email", "meeting_preference",
+    assert list(rows[0]) == ["last_name", "first_name", "student_number", "preferred_name", "pronouns", "email", "meeting_preference",
                              "contact_ok", "flags", "verification_level", "checked_in"]
     assert {r["email"].split("@")[0]: r["meeting_preference"] for r in rows} == {
         "ann": "In-person", "bo": "Virtual", "cy": "Virtual", "di": "Virtual"}  # blank or unclear is Virtual

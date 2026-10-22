@@ -31,7 +31,7 @@ from utsu_std.utils import absfile, application_uuid_for, normalize_case, studen
 
 logger = logging.getLogger(__name__)
 
-LIST_FIELDS = ["last_name", "first_name", "preferred_name", "pronouns", "email", "meeting_preference", "contact_ok",
+LIST_FIELDS = ["last_name", "first_name", "student_number", "preferred_name", "pronouns", "email", "meeting_preference", "contact_ok",
                "flags", "verification_level", "checked_in"]
 UNVERIFIED_FIELDS = ["uuid", "student_uuid", "reason", "submission_ts", "full_name", "student_number", "email",
                      "personal_email", "meeting_preference", "flags"]
@@ -206,6 +206,15 @@ def verify_file(csv_file: Path | str, cursor: sqlite3.Cursor, output_dir: Path |
     return current
 
 
+def with_trunc_ids(verified: list[dict], cursor: sqlite3.Cursor) -> list[dict]:
+    """Copies of verified RSVPs whose student_number is the truncated id from the matching uoft_data row ('' if none)."""
+    out = []
+    for r in verified:
+        row = cursor.execute("SELECT trunc_id FROM uoft_data WHERE uuid = ?", (r.get("uoft_uuid"),)).fetchone()
+        out.append({**r, "student_number": "" if row is None or row[0] is None else str(row[0])})
+    return out
+
+
 def attendee_list(verified: list[dict], in_person_only: bool = False) -> list[dict]:
     """Verified attendees sorted by last then first name, for check-in; optionally only those attending in person."""
     rows = [r for r in verified if not in_person_only or is_in_person(r.get("meeting_preference", ""))]
@@ -263,7 +272,7 @@ def fuzzy_review_rows(rsvps: list[dict]) -> list[dict]:
 def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path | str = "secrets/output") -> dict:
     """
     Process an AGM voter RSVP export and write, under output_dir:
-      agm_list_all.csv        every verified attendee (door list; no ids; meeting preference as In-person / Virtual)
+      agm_list_all.csv        every verified attendee (door list; truncated student number from uoft_data; meeting preference as In-person / Virtual)
       agm_list_in_person.csv  verified attendees whose meeting preference is in person
       agm_unverified.csv      RSVPs that could not be verified, with the reason
       agm_fuzzy_review.csv    RSVPs matched (or nearly) on a close rather than exact first name, with the closest
@@ -296,6 +305,7 @@ def process_agm(csv_file: Path | str, conn: sqlite3.Connection, output_dir: Path
     run.replace_all(_INSERT, "src/schema/agm.sql")
     run.settle()
     verified = [r for r in run.current if r["status"] == "verified"]
+    verified = with_trunc_ids(verified, conn.cursor())
     everyone, in_person = attendee_list(verified), attendee_list(verified, in_person_only=True)
     # an answer such as "None" or "N/A" is not a need
     with_needs = [{**r, "dietary": real_need(r.get("dietary")), "accessibility": real_need(r.get("accessibility"))}
