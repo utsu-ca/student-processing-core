@@ -8,7 +8,7 @@ from utsu_core.selection import add_flag, dedupe_by_uuid
 from utsu_core.pipeline import Run, ensure_table
 from utsu_core.verification import match_students, setup_reader
 from utsu_std.csv_safe import write_rows
-from utsu_std.utils import absfile, application_uuid_for, student_uuid_for
+from utsu_std.utils import absfile, application_uuid_for, normalize_uoft_email, student_uuid_for, EMAIL_FLAGS
 
 logger = logging.getLogger(__name__)
 
@@ -87,9 +87,10 @@ def verify_senators(csv_file: Path, cursor: sqlite3.Cursor, output_dir: Path | s
         app.update(read_preferences(row))
         if not app["id"] and not app["full_name"]:
             continue
+        app["email"], email_status = normalize_uoft_email(app["email"])
         app["uuid"] = application_uuid(app)
         app["student_uuid"] = student_uuid_for(app["email"], app["id"], app["full_name"])
-        app["flags"] = ""
+        app["flags"] = EMAIL_FLAGS.get(email_status, "")
         rows.append(app)
     applications = dedupe_by_uuid(rows)
 

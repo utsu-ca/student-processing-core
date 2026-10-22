@@ -1,6 +1,7 @@
 ﻿
 
 from argparse import ArgumentParser, Namespace
+from difflib import SequenceMatcher
 import hashlib
 import json
 import logging
@@ -254,6 +255,49 @@ def generate_uuid(base: str, kind: str = "") -> str:
     """
     namespace = uuid.uuid5(uuid.NAMESPACE_URL, f"utsu:{kind}") if kind else uuid.NAMESPACE_URL
     return str(uuid.uuid5(namespace, base))
+
+
+UOFT_MAIL_DOMAIN = "mail.utoronto.ca"
+_UOFT_OTHER_DOMAINS = {"utoronto.ca"}
+EMAIL_FLAGS = {"corrected": "email_corrected", "other": "personal_email", "invalid": "invalid_email"}
+
+
+def normalize_uoft_email(email: str) -> tuple[str, str]:
+    """
+    Normalize an address to `@mail.utoronto.ca`. Returns (address, status) where status is:
+    `ok` (already right, lowercased), `corrected` (the domain looked like a misspelling of it and was replaced),
+    `other` (a different, valid-looking domain such as gmail.com or plain utoronto.ca: left as typed) or
+    `invalid` (blank or not an address: left as typed).
+
+    >>> normalize_uoft_email(" Ann@Mail.UToronto.ca ")
+    ('ann@mail.utoronto.ca', 'ok')
+    >>> normalize_uoft_email("ann@mal.utoront.c")
+    ('ann@mail.utoronto.ca', 'corrected')
+    >>> normalize_uoft_email("ann@mail.utoronto.com")
+    ('ann@mail.utoronto.ca', 'corrected')
+    >>> [normalize_uoft_email(v)[1] for v in ("ann@utoronto.ca", "ann@gmail.com", "ann@alum.utoronto.ca")]
+    ['other', 'other', 'other']
+    >>> [normalize_uoft_email(v)[1] for v in ("", "ann", "a b@mail.utoronto.ca", "@mail.utoronto.ca", "a@@b.ca")]
+    ['invalid', 'invalid', 'invalid', 'invalid', 'invalid']
+    """
+    text = clean_text(email or "")
+    local, at, domain = text.rpartition("@")
+    domain = domain.lower().rstrip(".")
+    if not at or not local or re.search(r"[\s@]", local) or not domain or re.search(r"\s", domain):
+        return text, "invalid"
+    if domain == UOFT_MAIL_DOMAIN:
+        return f"{local.lower()}@{domain}", "ok"
+    if domain in _UOFT_OTHER_DOMAINS:
+        return text, "other"
+    if domain.endswith(".utoronto.ca"):
+        # a real UofT subdomain (alum, cs, ...) stays; a near-miss of "mail" (mial, mal, email) is a typo
+        label = domain[:-len(".utoronto.ca")]
+        if "." in label or SequenceMatcher(None, label, "mail").ratio() < 0.75:
+            return text, "other"
+        return f"{local.lower()}@{UOFT_MAIL_DOMAIN}", "corrected"
+    if SequenceMatcher(None, domain, UOFT_MAIL_DOMAIN).ratio() >= 0.8:
+        return f"{local.lower()}@{UOFT_MAIL_DOMAIN}", "corrected"
+    return text, "other"
 
 
 def identity_key(email: str = "", student_number: str = "", full_name: str = "") -> str:

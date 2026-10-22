@@ -55,7 +55,7 @@ At least one of the name columns or `Student Number` must exist.
 
 | File | Contents |
 |---|---|
-| `agm_list_all.csv` | **Door list**: every verified attendee, sorted by last name. Columns `last_name, first_name, preferred_name, pronouns, email, meeting_preference, contact_ok, flags, verification_level, checked_in`. No ids. `checked_in` is a blank column for the door. |
+| `agm_list_all.csv` | **Door list**: every verified attendee, sorted by last name. Columns `last_name, first_name, student_number, preferred_name, pronouns, email, meeting_preference, contact_ok, flags, verification_level, checked_in`. `student_number` is the truncated roster number (`xxxxx3971x`), read from `uoft_data` for the verified student (not from the form). No other ids. `checked_in` is a blank column for the door. |
 | `agm_list_in_person.csv` | The same columns, only people attending `In-person`. |
 | `agm_unverified.csv` | RSVPs that could not be verified, with `reason`. Keeps `uuid` and `student_uuid` for the "more information" emails. |
 | `agm_fuzzy_review.csv` | **Private.** For a person to reconcile: every binding RSVP whose name was not found exactly but has close roster students (same last name, similar first name). Has the RSVP, `status`, `reason`, `match_method`, `name_similarity`, then the closest three students as `match1_*`…`match3_*` (`uoft_uuid, name, student_number` (truncated), `division, similarity, selected`), where `selected` is `SELECTED` for the student the RSVP was verified as (none when it could not be decided), and empty `reviewer_decision` / `reviewer_notes` columns. |

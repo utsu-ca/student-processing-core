@@ -19,7 +19,7 @@ from utsu_core.pipeline import Run, ensure_table
 from utsu_core.verification import match_students, setup_reader
 from utsu_core.wfni import compute_wfni, current_weights
 from utsu_std.csv_safe import SafeDictWriter, open_csv, write_rows
-from utsu_std.utils import absfile, application_uuid_for, clean_text, normalize_case, student_uuid_for
+from utsu_std.utils import absfile, application_uuid_for, clean_text, normalize_case, normalize_uoft_email, student_uuid_for, EMAIL_FLAGS
 from utsu_std.parsing_utils import get_trunc_id, split_multi
 
 logger = logging.getLogger(__name__)
@@ -102,12 +102,13 @@ def build_application(row: dict[str, str]) -> dict:
     app["requested_amount"] = "" if amount is None else f"{amount:g}"
     app["emergency"] = int(any("emergency bursary" in s.lower() for s in split_multi(app.get("lc_subsidies", ""))))
     app["faculty"] = app.get("faculty", "").split(" - ")[0].strip()
+    app["email"], email_status = normalize_uoft_email(app.get("email", ""))
     app["uuid"] = sap_uuid(app)
     app["student_uuid"] = student_uuid_for(app.get("email", ""), app.get("id", ""), app["full_name"])
     weights = current_weights()
     wfni, unknown = compute_wfni(app, weights)
     app["wfni"] = "" if wfni is None else wfni
-    flags = []
+    flags = [EMAIL_FLAGS[email_status]] if email_status in EMAIL_FLAGS else []
     if app.get("member_confirmed", "").lower() != "yes":
         flags.append("membership_not_confirmed")
     if not app["stream"]:
