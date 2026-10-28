@@ -90,8 +90,10 @@ def validate_schema(raw: Any) -> dict:
                 errs.append(f"{where}: options must be a list of unique non-empty strings")
         if "pattern" in f:
             try:
+                if len(f["pattern"]) > 200:
+                    raise ValueError
                 re.compile(f["pattern"])
-            except (re.error, TypeError):
+            except (re.error, TypeError, ValueError):
                 errs.append(f"{where}: invalid pattern")
         sif = f.get("show_if")
         if sif is not None:
