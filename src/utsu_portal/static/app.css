@@ -1,0 +1,11 @@
+body{font:16px system-ui,sans-serif;margin:0;background:#f5f6f8;color:#1b1f24}
+header{background:#1e3a5f;color:#fff;padding:.5rem 1rem;display:flex;gap:1rem;align-items:center;justify-content:space-between}
+header h1{font-size:1.1rem;margin:0}nav a,nav button{color:#fff;margin-left:.75rem;background:none;border:0;cursor:pointer;font:inherit;text-decoration:underline}
+main{max-width:860px;margin:1rem auto;padding:0 1rem}
+.card{background:#fff;border-radius:8px;padding:1rem;margin-bottom:1rem;box-shadow:0 1px 3px #0002}
+label{display:block;margin:.6rem 0 .2rem;font-weight:600}.help{font-weight:400;color:#555;font-size:.85rem}
+input,select,textarea{width:100%;box-sizing:border-box;padding:.4rem;font:inherit}
+input[type=checkbox],input[type=radio]{width:auto}.opt{font-weight:400;display:block}
+button.primary{background:#1e3a5f;color:#fff;border:0;padding:.5rem 1rem;border-radius:4px;cursor:pointer;margin:.5rem .5rem 0 0}
+.err{color:#b00020;font-size:.85rem}.ok{color:#0a7d33}.badge{padding:.1rem .5rem;border-radius:10px;background:#dde;font-size:.8rem}
+.row{display:flex;gap:1rem}.row>*{flex:1}video,canvas,img.shot{max-width:100%;border-radius:4px}textarea.yaml{font-family:monospace;min-height:320px}
