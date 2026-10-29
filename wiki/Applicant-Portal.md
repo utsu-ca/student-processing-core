@@ -43,3 +43,17 @@ same way at startup. Submissions record the version and hash and are rejected if
 A module is an object with `name` and `router(ctx)`; pass it via `create_app(extra_modules=(...))`. `ctx` provides
 the store, settings, mailer (`utsu_portal.mailer.Mailer`, override `send` for real mail), event bus and auth
 dependencies (`require_user`, `require_verified`, `require_admin`).
+
+## Clubs (`modules/clubs.py`)
+- **Registration:** a verified user registers a club (`POST /api/clubs`, unique name) and becomes its owner, who can add
+  `treasurer`/`executive` members. Admins approve via `POST /api/admin/clubs/{id}/decision`; it needs
+  `club_registration_approvals` (default 2) **distinct** admins, and any rejection is final. Admins who belong to a club
+  cannot approve its items.
+- **Finances:** an integer-cents ledger. Admins add grants; owners/treasurers record income (auto-approved) and expenses.
+  Expenses need at least one receipt and admin approval: 1 approver, or 2 at/above `expense_large_cents` (default $500).
+  An expense cannot be approved beyond the club balance.
+- **Receipts:** base64 jpeg/png/webp/pdf uploads (size-capped), de-duplicated per club by SHA-256, each usable once.
+- **Tax:** each entry stores net/tax/gross using a rate in basis points (default 1300 = Ontario HST; 0 for exempt) and
+  inclusive/exclusive entry. `GET /api/clubs/{id}/summary` reports balance, tax paid (input tax credit eligible), tax
+  collected, net tax position and spend by category, counting approved entries only.
+- The approval mechanism is the reusable `record_decision` helper (N distinct approvers, no self-approval).

@@ -19,6 +19,12 @@ class Settings:
     max_image_bytes: int = 1_500_000
     division_codes: tuple[str, ...] = ("UTSG", "UTM", "UTSC")
     seed_forms: bool = True
+    club_registration_approvals: int = 2  # distinct admins needed to approve a club
+    expense_approvals_small: int = 1
+    expense_approvals_large: int = 2
+    expense_large_cents: int = 50_000  # expenses at/above this need the larger approval count
+    default_tax_bps: int = 1300  # Ontario HST 13%
+    max_receipt_bytes: int = 3_000_000
 
     @classmethod
     def from_env(cls) -> "Settings":
