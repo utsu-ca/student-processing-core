@@ -1,0 +1,19 @@
+id: student_aid_bursary
+version: 1
+title: Student Aid Bursary Program (SABP)
+description: Request emergency financial assistance.
+fields:
+  - {id: terms, type: multiselect, label: "Terms applying for", required: true, options: ["Fall 2026", "Winter 2027", "Summer 2027"]}
+  - {id: enrolment, type: radio, label: Enrolment, required: true, options: [Full-time, Part-time]}
+  - {id: monthly_income, type: number, label: Monthly income (CAD), required: true, min: 0, max: 100000}
+  - {id: monthly_expenses, type: number, label: Monthly expenses (CAD), required: true, min: 0, max: 100000}
+  - {id: amount_requested, type: number, label: Amount requested (CAD), required: true, min: 1, max: 5000}
+  - {id: hardship, type: textarea, label: Describe your financial hardship, required: true, min: 50, max: 3000}
+  - {id: has_other_aid, type: checkbox, label: I receive other financial aid (e.g. OSAP)}
+  - id: other_aid_detail
+    type: text
+    label: Other aid sources
+    max: 300
+    show_if: {field: has_other_aid, equals: true}
+  - {id: contact_email, type: email, label: Contact email for the committee, required: true}
+  - {id: consent, type: checkbox, label: I consent to my information being reviewed by the SABP committee, required: true}

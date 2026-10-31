@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AGM check-in</title><link rel="stylesheet" href="/static/app.css"></head>
+<body><header><h1>AGM check-in</h1><nav><a href="/" style="color:#fff">Portal</a></nav></header>
+<main><div class="card"><video id="cam" autoplay playsinline muted hidden></video>
+<label for="uuid">Registration UUID (scan the attendee's QR code or paste it)</label>
+<input id="uuid" autocomplete="off" autofocus><button class="primary" id="go">Check in</button><button class="primary" id="scan">Use camera</button>
+<div id="err" class="err"></div></div><div id="result"></div><div class="card"><h3>Recent</h3><ul id="recent"></ul></div></main>
+<script src="/static/checkin.js"></script></body></html>
