@@ -15,6 +15,7 @@ dependencies = []
 dev = ["pytest", "httpx"]
 portal = ["fastapi>=0.110", "uvicorn", "pyyaml", "cryptography>=50", "segno>=1.6.6"]
 firestore = ["google-cloud-firestore"]
+sql = ["sqlalchemy>=2"]  # + a driver: psycopg (PostgreSQL/Supabase), pyodbc (Azure SQL), pymysql
 
 [tool.setuptools.packages.find]
 where = ["src"]

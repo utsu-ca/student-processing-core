@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import formdef
 from .context import Context
-from .mailer import Mailer
+from .mailer import Mailer, mailer_from_env
 from .modules.admin import AdminModule
 from .modules.agm import AgmModule
 from .modules.agm_verify import AgmVerifyModule
@@ -45,7 +45,7 @@ def seed_forms(ctx: Context, directory: Path = FORMS_DIR) -> None:
 def create_app(settings: Settings | None = None, store: Store | None = None, mailer: Mailer | None = None,
                extra_modules: tuple = ()) -> FastAPI:
     settings = settings or Settings.from_env()
-    ctx = Context(store or open_store(settings.store), settings, mailer or Mailer())
+    ctx = Context(store or open_store(settings.store), settings, mailer or mailer_from_env())
     app = FastAPI(title="UTSU applicant portal")
     app.state.ctx = ctx
     if settings.seed_forms:
@@ -61,6 +61,10 @@ def create_app(settings: Settings | None = None, store: Store | None = None, mai
         return resp
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+    @app.get("/healthz", include_in_schema=False)
+    def healthz():
+        return {"ok": True}
 
     @app.get("/", include_in_schema=False)
     def index():

@@ -1,0 +1,12 @@
+.git
+.venv
+.idea
+secrets
+tests
+testing
+wiki
+*.sqlite
+*.sqlite3
+*.pdf
+__pycache__
+*.egg-info
