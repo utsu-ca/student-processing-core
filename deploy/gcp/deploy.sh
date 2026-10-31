@@ -44,7 +44,7 @@ ask DOMAIN_NAME "Website address people will visit (e.g. portal.example.com)" "$
 ask PORTAL_ADMINS "Bootstrap admin usernames, comma-separated" '^[A-Za-z0-9._,-]+$' "letters, digits . _ - and commas" 
 SMTP_URL="${SMTP_URL-}"
 if [ -z "$SMTP_URL" ]; then
-    read -r -p "SMTP URL for OTP email, e.g. ******HOST:465 (blank = log only, NOT for production)" SMTP_URL
+    read -r -p "SMTP URL for OTP email, e.g. smtps://USER:PASS@HOST:465 (blank = log only, NOT for production)" SMTP_URL
 fi
 MAIL_FROM="${MAIL_FROM:-no-reply@${DOMAIN_NAME#*.}}"
 ZOOM_URL="${ZOOM_URL-}"; ZOOM_SSO_URL="${ZOOM_SSO_URL-}"; ZOOM_REDIRECT_URIS="${ZOOM_REDIRECT_URIS-}"

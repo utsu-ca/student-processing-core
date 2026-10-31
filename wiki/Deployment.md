@@ -29,7 +29,7 @@ generated once into Secret Manager and mounted as env vars. **Never rotate `PORT
 Everything goes through the five-method `Store` interface (`get/put/delete/list/create`; `create` must be atomic). Built in:
 - **Firestore** (wrapped in `ChunkingStore`, which shards values over Firestore's 1 MiB document limit, e.g. receipts and scans).
 - **SQL** via SQLAlchemy: a single `portal_docs(col, id, body)` table created automatically, so there are no migrations.
-  - Supabase / any PostgreSQL: `PORTAL_STORE=sql:******HOST:5432/DB` (psycopg is in the image).
+  - Supabase / any PostgreSQL: `PORTAL_STORE=sql:postgresql+psycopg://USER:PASS@HOST:5432/DB` (psycopg is in the image).
   - Azure SQL / SQL Server: `sql:mssql+pyodbc://...?driver=ODBC+Driver+18+for+SQL+Server` (install `pyodbc` and the ODBC driver in a derived image).
   - MySQL: `sql:mysql+pymysql://...`.
 - **Custom**: implement `Store` and point `PORTAL_STORE` at `my_pkg.module:factory`.
