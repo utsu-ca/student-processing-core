@@ -1,10 +1,11 @@
 id: agm_rsvp
-version: 1
+version: 2
 title: AGM Voter RSVP
 description: Register to vote at the Annual General Meeting.
 fields:
   - {id: attendance, type: radio, label: "How will you attend?", required: true, options: [In person, Online]}
   - {id: division, type: select, label: Division, required: true, options: [UTSG, UTM, UTSC]}
+  - {id: pronouns, type: text, label: Pronouns (shown at check-in), max: 40}
   - {id: accessibility, type: textarea, label: Accessibility needs, max: 1000}
   - {id: proxy, type: checkbox, label: I am voting by proxy}
   - id: proxy_name

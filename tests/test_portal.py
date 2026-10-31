@@ -99,14 +99,14 @@ def test_form_versioning_and_publish(env):
     assert r.status_code == 409 and "bump" in r.text
     # reformatting only is fine (same hash)
     assert c.put("/api/admin/forms/agm_rsvp/draft", json={"yaml": y}, headers=ah).status_code == 200
-    y2 = y.replace("version: 1", "version: 2").replace("Accessibility needs", "Access needs")
+    y2 = y.replace("version: 2", "version: 3").replace("Accessibility needs", "Access needs")
     r = c.put("/api/admin/forms/agm_rsvp/draft", json={"yaml": y2}, headers=ah)
     assert r.status_code == 200
     old = c.get("/api/forms/agm_rsvp/static").json()
-    assert old["version"] == 1  # draft is not live
+    assert old["version"] == 2  # draft is not live
     assert c.post("/api/admin/forms/agm_rsvp/publish", headers=ah).status_code == 200
     new = c.get("/api/forms/agm_rsvp/static").json()
-    assert new["version"] == 2 and new["hash"] != old["hash"]
+    assert new["version"] == 3 and new["hash"] != old["hash"]
     # stale clients are told to reload
     _, uh = None, None
     assert c.post("/api/admin/forms/agm_rsvp/unpublish", headers=ah).status_code == 200
@@ -119,7 +119,7 @@ def test_stale_hash_rejected(env):
     c, mail = env
     ah, uh = setup_admin_and_user(c, mail)
     activate(c, ah, uh)
-    r = c.put("/api/forms/agm_rsvp/submission", json={"version": 1, "hash": "0" * 64, "data": {}}, headers=uh)
+    r = c.put("/api/forms/agm_rsvp/submission", json={"version": 2, "hash": "0" * 64, "data": {}}, headers=uh)
     assert r.status_code == 409
 
 

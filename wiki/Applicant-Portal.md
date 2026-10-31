@@ -57,3 +57,19 @@ dependencies (`require_user`, `require_verified`, `require_admin`).
   inclusive/exclusive entry. `GET /api/clubs/{id}/summary` reports balance, tax paid (input tax credit eligible), tax
   collected, net tax position and spend by category, counting approved entries only.
 - The approval mechanism is the reusable `record_decision` helper (N distinct approvers, no self-approval).
+
+## AGM: SSO provider, online ID verifier, invitation panel and check-in
+- **SSO provider** (`modules/sso.py`, part of the core): OpenID Connect authorization-code flow with RS256 ID tokens
+  (`/sso/.well-known/openid-configuration`, `/sso/jwks`, `/sso/authorize`, `/sso/token`, `/sso/userinfo`), optional PKCE,
+  single-use 60 s codes, exact redirect-URI matching and pairwise subjects. Only name and email are released. Modules
+  register relying parties via `ctx.services["sso"].register_client(...)` with an eligibility callback. Set
+  `PORTAL_SSO_KEY` (PEM) so keys survive restarts, and `PORTAL_BASE_URL` as the issuer.
+- **Online ID verifier** (`modules/agm_verify.py`, separate from account activation): an `agm_rsvp` registrant who chose
+  *Online* submits a fresh live face + ID scan; an admin approves it (or `PORTAL_AGM_VERIFY_MODE=auto`), the images are
+  purged, and a 12 h grant is recorded. Zoom SSO is refused without that grant.
+- **Invitation panel** (`modules/agm.py`, "AGM" in the portal): in-person registrants see a QR code of their
+  registration UUID; online registrants verify, then "Log in to Zoom" returns the Zoom link and SSO start URL
+  (`PORTAL_ZOOM_URL`, `PORTAL_ZOOM_SSO_URL`, `PORTAL_ZOOM_CLIENT_SECRET`, `PORTAL_ZOOM_REDIRECT_URIS`).
+- **Check-in screen** (`/static/checkin.html`, admins only): scan the QR (camera where `BarcodeDetector` exists, or a
+  keyboard-wedge scanner / paste) to show the attendee's name, pronouns (an optional `pronouns` field on the RSVP form,
+  v2, since the user record does not store them) and a "Checked in" message; repeat scans are flagged as duplicates.

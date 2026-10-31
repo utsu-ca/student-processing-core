@@ -21,6 +21,7 @@ class Context:
     settings: Settings
     mailer: Mailer
     bus: EventBus = field(default_factory=EventBus)
+    services: dict = field(default_factory=dict)  # shared objects between modules (e.g. the SSO provider)
     # --- helpers -----------------------------------------------------------
     def now(self) -> int:
         return int(time.time())

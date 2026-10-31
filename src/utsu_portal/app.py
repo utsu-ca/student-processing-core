@@ -10,14 +10,17 @@ from . import formdef
 from .context import Context
 from .mailer import Mailer
 from .modules.admin import AdminModule
+from .modules.agm import AgmModule
+from .modules.agm_verify import AgmVerifyModule
 from .modules.auth import AuthModule
 from .modules.clubs import ClubsModule
+from .modules.sso import SSOModule
 from .modules.forms import FormsModule
 from .settings import FORMS_DIR, Settings
 from .store import Store, open_store
 
 STATIC = Path(__file__).parent / "static"
-CORE_MODULES = (AuthModule(), FormsModule(), AdminModule(), ClubsModule())
+CORE_MODULES = (SSOModule(), AuthModule(), AgmVerifyModule(), AgmModule(), FormsModule(), AdminModule(), ClubsModule())
 
 
 def seed_forms(ctx: Context, directory: Path = FORMS_DIR) -> None:

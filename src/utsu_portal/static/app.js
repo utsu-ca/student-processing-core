@@ -19,8 +19,8 @@
     nav.replaceChildren();
     const link = (t, f) => { const b = el("button", {}, t); b.onclick = f; nav.append(b); };
     if (!token) return link("Sign in", authView);
-    link("Forms", formsView); link("My applications", statusView); link("Account", accountView);
-    if (me && me.role === "admin") { link("Admin: forms", adminForms); link("Admin: verifications", adminVerifications); }
+    link("Forms", formsView); link("AGM", agmView); link("My applications", statusView); link("Account", accountView);
+    if (me && me.role === "admin") { link("Admin: forms", adminForms); link("Admin: verifications", adminVerifications); link("Admin: AGM verifications", adminAgmChecks); link("AGM check-in", () => { location.href = "/static/checkin.html"; }); }
     link("Sign out", () => { token = null; me = null; sessionStorage.removeItem("token"); setNav(); authView(); });
   }
 
@@ -166,6 +166,47 @@
     }
   }
 
+  // AGM invitation panel: in-person registrants show a QR code; online registrants verify their ID, then sign in to Zoom via SSO.
+  async function agmView() {
+    main.replaceChildren(); const inv = await api("/agm/invitation"), c = card(el("h2", {}, "AGM"));
+    if (!inv.registered) { const b = el("button", { className: "primary" }, "Register for the AGM"); b.onclick = () => formView("agm_rsvp"); c.append(el("p", {}, "You are not registered yet."), b); return; }
+    c.append(el("p", {}, "Registration: "), el("span", { className: "badge" }, inv.mode === "online" ? "Online" : "In person"), inv.checked_in ? msg("ok", "You are checked in.") : el("span"));
+    if (inv.mode === "in_person") {
+      const q = await api("/agm/qr"); c.append(el("p", {}, "Show this code at the door:"));
+      if (q.svg) { const img = el("img", { className: "shot", alt: "Check-in QR code", width: 220, height: 220 }); img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(q.svg); c.append(img); }
+      c.append(el("p", { className: "help" }, "Code: " + q.payload));
+      return;
+    }
+    if (!inv.id_verified) {
+      const st = await api("/agm/verify");
+      if (st.status === "pending") { c.append(msg("", "Your ID check is awaiting review.")); return; }
+      c.append(el("p", {}, "Verify your identity to receive your Zoom sign-on."));
+      const ch = await api("/agm/verify/challenge"), video = el("video", { autoplay: true, playsInline: true, muted: true }), shots = {};
+      c.append(el("p", {}, "Phrase for the capture: " + ch.phrase), video);
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false }); video.srcObject = stream;
+      ["face", "id_card"].forEach(k => { const b = el("button", { className: "primary" }, "Capture " + (k === "face" ? "face" : "ID card")), im = el("img", { className: "shot" });
+        b.onclick = () => { const cv = el("canvas"); cv.width = 640; cv.height = Math.round(640 * (video.videoHeight || 480) / (video.videoWidth || 640)); cv.getContext("2d").drawImage(video, 0, 0, cv.width, cv.height); shots[k] = cv.toDataURL("image/jpeg", 0.8); im.src = shots[k]; }; c.append(b, im); });
+      const go = el("button", { className: "primary" }, "Submit"); go.onclick = act(c, async () => { await api("/agm/verify", { method: "POST", body: { face: shots.face, id_card: shots.id_card, challenge: ch.challenge } }); stream.getTracks().forEach(t => t.stop()); agmView(); });
+      c.append(go); return;
+    }
+    const j = el("button", { className: "primary" }, "Log in to Zoom");
+    j.onclick = act(c, async () => { const z = await api("/agm/zoom/join", { method: "POST" }); c.append(el("p", {}, el("a", { href: z.sso_url || z.zoom_url, target: "_blank", rel: "noopener" }, "Open Zoom"))); window.open(z.sso_url || z.zoom_url, "_blank", "noopener"); });
+    c.append(msg("ok", "ID verified."), j);
+  }
+
+  async function adminAgmChecks() {
+    main.replaceChildren(); const list = await api("/admin/agm/verifications");
+    if (!list.length) card(el("p", {}, "Nothing pending."));
+    for (const v of list) {
+      const c = card(el("strong", {}, `${v.first_name} ${v.last_name} ***${v.student_number}`));
+      const show = el("button", { className: "primary" }, "Show scans"), yes = el("button", { className: "primary" }, "Approve"), no = el("button", { className: "primary" }, "Reject");
+      show.onclick = act(c, async () => { const m = await api(`/admin/agm/verifications/${v.id}/media`); c.append(el("div", { className: "row" }, el("img", { className: "shot", src: m.face }), el("img", { className: "shot", src: m.id_card }))); });
+      yes.onclick = act(c, async () => { await api(`/admin/agm/verifications/${v.id}/decision`, { method: "POST", body: { approve: true } }); adminAgmChecks(); });
+      no.onclick = act(c, async () => { await api(`/admin/agm/verifications/${v.id}/decision`, { method: "POST", body: { approve: false } }); adminAgmChecks(); });
+      c.append(show, yes, no);
+    }
+  }
+
   function recoveryView() {
     main.replaceChildren(); const c = card(el("h2", {}, "Account recovery"));
     const [l1, u] = field("Username", {}), [l2, sn] = field("Last 4 digits of student number", { maxLength: 4 });
@@ -184,6 +225,7 @@
   }
 
   async function refreshMe() { try { me = await api("/me"); } catch (e) { token = null; sessionStorage.removeItem("token"); me = null; } }
-  async function start() { if (token) await refreshMe(); setNav(); token ? (me.status === "verified" ? formsView() : accountView()) : authView(); }
+  async function start() { if (token) await refreshMe(); setNav();
+    const next = sessionStorage.getItem("sso_next"); if (token && next && me) { sessionStorage.removeItem("sso_next"); location.href = next; return; } token ? (me.status === "verified" ? formsView() : accountView()) : authView(); }
   start();
 })();

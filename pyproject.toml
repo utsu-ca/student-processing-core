@@ -13,7 +13,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest", "httpx"]
-portal = ["fastapi>=0.110", "uvicorn", "pyyaml"]
+portal = ["fastapi>=0.110", "uvicorn", "pyyaml", "cryptography>=50", "segno>=1.6.6"]
 firestore = ["google-cloud-firestore"]
 
 [tool.setuptools.packages.find]
