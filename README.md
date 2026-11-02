@@ -14,16 +14,30 @@ python -m venv .venv
 pip install -e ".[dev]"
 ```
 
-The editable install puts `utsu_core`, `utsu_std` and `utsu_mail` on the import path, so every `python -m ...` command
-below works from any directory. Relative paths in flags and `config.json` (`data/`, `secrets/`, `testing/`,
+The editable install puts `utsu_core`, `utsu_programs`, `utsu_std` and `utsu_mail` on the import path and installs one command
+per program: `utsu-senate`, `utsu-sap`, `utsu-agm` (each takes only its own flags, plus the common ones) and `utsu-all`
+(the three in one run). `python -m utsu_programs.<senate|sap|agm>` and `python -m utsu_programs` do the same, so every
+command below works from any directory. Relative paths in flags and `config.json` (`data/`, `secrets/`, `testing/`,
 `templates/`) are always taken from the project root, never from the working directory.
+
+### Code layout
+
+- `utsu_core`: what every program shares and nothing program-specific: the student data import, verification
+  (matching), choosing the binding application per person, integrity alerts, the CLI plumbing, and the **`ProgramSpec`**
+  (`spec.py`): a program is *declared* (its form's lookup table, its table and schema, identity columns, how a person
+  is keyed and ranked, how a row is annotated) and the shared engine (`pipeline.Run`) runs it.
+- `utsu_programs/{senate,sap,agm}`: one package per program with only what is its own (its `ProgramSpec`, its schema,
+  its outputs, and its own command in `cli.py`). A program imports `utsu_core`, never another program, so each can be
+  packaged on its own.
+- `utsu_std`: text, id, database and CSV helpers. `utsu_mail`: the mail-merge tool.
 
 ## Updating with new data
 
 The student data (`--import_uoft_data`) is a one-shot: it is imported only when the database has no (or an empty)
 `uoft_data` table. Pass `--reimport_uoft_data` to replace it. The file is checked first, so a bad file leaves the
 previous student data in place. Without `--testing`, settings come from `config.json` (flags override it, even when
-equal to the default); `--program`, `--merge_reviews` and `--reimport_uoft_data` are never saved there.
+equal to the default); the one-off flags (`--merge_reviews`, `--issue_batches`, `--record_decisions`, `--verify_only`,
+`--reimport_uoft_data` and `--no_backup`) are never saved there.
 
 The Senate, SABP and AGM form exports are meant to be re-run as they grow: give the **full export** each time. Every run
 reads the whole export and verifies every application in it. Google Forms stamps an edited or re-submitted response
@@ -48,7 +62,7 @@ be using the student's details). With no verified application the newest one is 
 `decided` stage: it passed verification, the reviewers' need levels, the reconciliation and the decision, and is ready
 for disbursement, which this program does not track). Once a student has a complete application for a term, any other
 application of theirs for **that term**, new or still in progress, is `not_considered`: it is raised as a warning. Other
-terms are unaffected. (`COMPLETE_STAGE` in `sap.py` is the one place that says what complete means.)
+terms are unaffected. (`COMPLETE_STAGE` in `utsu_programs/sap/program.py` is the one place that says what complete means.)
 
 **SABP applications that leave the export.** A stored SABP application that is no longer in the export (the student
 edited or re-submitted it, or the row was deleted) is kept as it is, with its batch, ratings and decision. If the student
@@ -134,16 +148,15 @@ written; it is written to the output files as UTF-8 with a BOM, so Excel shows a
 are UTF-8, UTF-16 or Excel's plain "CSV" (Windows-1252, with a warning); bytes that are not text become `\ufffd` instead
 of stopping the run.
 
-Student names and emails are not written to the log (the old `--log_sample` and `--dry_run` flags of `utsu_core.main`
-are gone).
+Student names and emails are not written to the log (the old `--log_sample` and `--dry_run` flags are gone).
 
 ## Testing mode
 
 ```
-python -m utsu_core.main --testing
+utsu-all --testing          # or utsu-senate / utsu-sap / utsu-agm --testing for one program
 ```
 
-This first generates the fake data (the generators are in `testing/`), then runs the whole pipeline on it. The fake
+This first generates the fake data (the generators are in `testing/`), then runs the pipeline on it. The fake
 roster and form exports (`fake_uoft_data.csv`, `fake_senator.csv`, `fake_sabp.csv`, `fake_agm.csv`) are written to
 `testing/output/` along with a fresh database, the log, and the results (`verified.csv`, `unverified.csv`,
 `seats.csv`, `unseated.csv`, `seating_run.json`). That folder is gitignored and rebuilt every run; the generators are
@@ -158,10 +171,10 @@ roster. Use `--only` to pick some, `--students` to set the roster size (it must 
 
 ## Student Aid Bursary Program (SABP)
 
-`utsu_core/sap.py` processes the SABP form export (Stages 1-3 of SAS-002). From `src/`:
+`utsu_programs/sap/program.py` processes the SABP form export (Stages 1-3 of SAS-002). From the project root:
 
 ```
-python -m utsu_core.main --program sap --sap_file path/to/export.csv [--batch_size 50]
+utsu-sap --sap_file path/to/export.csv [--batch_size 50]
 ```
 
 (`--testing` supplies `testing/output/fake_sabp.csv`.) Column names come from `data/conversion_table_sap.csv`; columns not
@@ -194,7 +207,7 @@ issued (e.g. the last, partial batch grew) a warning says so and merging reports
 Once the sheets are filled in, merge them:
 
 ```
-python -m utsu_core.main --program sap --merge_reviews
+utsu-sap --merge_reviews
 ```
 
 This writes `sap_merged_ratings.csv` (and the `sap_review` table): per application the reviewers, each rating, the mean,
@@ -223,17 +236,17 @@ per stage. Databases from before this column get it filled in on the next run (`
 `in_review` if the batch has reviewers, else `scored`).
 
 ```
-python -m utsu_core.main --program sap --issue_batches all          # sheets were handed out without --reviewers
-python -m utsu_core.main --program sap --merge_reviews
-python -m utsu_core.main --program sap --record_decisions decisions.csv
+utsu-sap --issue_batches all          # sheets were handed out without --reviewers
+utsu-sap --merge_reviews
+utsu-sap --record_decisions decisions.csv
 ```
 
 ## AGM voter RSVPs
 
-`utsu_core/agm.py` processes the AGM voter RSVP export. From `src/`:
+`utsu_programs/agm/program.py` processes the AGM voter RSVP export. From the project root:
 
 ```
-python -m utsu_core.main --program agm --agm_file "path/to/RSVP.csv"
+utsu-agm --agm_file "path/to/RSVP.csv"
 ```
 
 (`--testing` supplies `testing/output/fake_agm.csv`; `python testing/generate_fake_data.py --only agm` regenerates it.) Columns come from
@@ -256,7 +269,7 @@ python -m utsu_core.main --program agm --agm_file "path/to/RSVP.csv"
 
   | file | what is in it |
   |---|---|
-  | `agm_list_all.csv` | the **door list**: every verified attendee, sorted by last name. Columns `last_name, first_name, preferred_name, pronouns, email, meeting_preference, contact_ok, flags, verification_level, checked_in`. No ids. `meeting_preference` is just **`In-person`** or **`Virtual`**: anything that is not clearly in person, including a blank answer, is Virtual. `checked_in` is a blank column for the door |
+  | `agm_list_all.csv` | the **door list**: every verified attendee, sorted by last name. Columns `last_name, first_name, student_number, preferred_name, pronouns, email, meeting_preference, contact_ok, flags, verification_level, checked_in`. `student_number` is the truncated roster number (`xxxxx3971x`), read from `uoft_data` for the verified student (not from the form). No other ids. `meeting_preference` is just **`In-person`** or **`Virtual`**: anything that is not clearly in person, including a blank answer, is Virtual. `checked_in` is a blank column for the door |
   | `agm_list_in_person.csv` | the same columns, only the people who are `In-person` |
   | `agm_unverified.csv` | RSVPs that could not be verified, with the `reason`; keeps the ids (`uuid`, `student_uuid`) the "more information" emails use |
   | `agm_accommodations.csv` | dietary and accessibility needs of verified attendees, by `uuid` only, no names; answers such as `None` or `N/A` are not needs and are left out |
@@ -272,12 +285,12 @@ python -m utsu_core.main --program agm --agm_file "path/to/RSVP.csv"
   `integrity_duplicates` and `alerts`. `sap_run.json` uses the same names (`binding_applications`,
   `verified_applications`, ...).
 
-**Verification on its own.** The same module (`utsu_core/agm.py`) can be run without producing any
+**Verification on its own.** `--verify_only` runs the same verification without producing any
 lists or database rows, to check an RSVP export against a database that already holds `uoft_data`:
 
 ```
-python -m utsu_core.agm --agm_file "path/to/RSVP.csv" --db path/to/db.sqlite [--output_dir DIR]
-python -m utsu_core.agm --testing     # testing/output/fake_agm.csv against the last `main --testing` database
+utsu-agm --verify_only --agm_file "path/to/RSVP.csv" --db path/to/db.sqlite [--output_dir DIR]
+utsu-agm --verify_only --testing     # testing/output/fake_agm.csv against the last `utsu-agm --testing` database
 ```
 
 It writes `agm_verification.csv` (status, reason, match method and flags per person).
@@ -287,7 +300,7 @@ It writes `agm_verification.csv` (status, reason, match method and flags per per
 Mail-merge emails sent directly over SMTP:
 
 ```
-python -m utsu_mail --list_fields                 # templates + columns from src/schema/*.sql
+python -m utsu_mail --list_fields                 # templates + columns from the programs' schema.sql files
 python -m utsu_mail senate_verified --dry_run     # render a preview, never connects to SMTP
 python -m utsu_mail senate_verified               # preview, confirm, send
 ```

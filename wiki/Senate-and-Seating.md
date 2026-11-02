@@ -1,10 +1,10 @@
 # Senate and Seating
 
-`src/utsu_core/senate.py` verifies Senate applications; `src/utsu_core/seating.py` assigns seats to the verified
-applicants. Both run for `--program senate` or `all`.
+`src/utsu_programs/senate/program.py` verifies Senate applications; `src/utsu_programs/senate/seating.py` assigns seats
+to the verified applicants. Both run with `utsu-senate` (or `utsu-all`).
 
 ```powershell
-python -m utsu_core.main --program senate --verify_student secrets/senate.csv --seats_file data/seats_senate.csv --seed 2026
+utsu-senate --verify_student secrets/senate.csv --seats_file data/seats_senate.csv --seed 2026
 ```
 
 ## Form export

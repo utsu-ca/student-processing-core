@@ -4,7 +4,7 @@ import csv
 import logging
 
 from test_sap import LC_ROW, form_csv, students_db
-from utsu_core import sap
+from utsu_programs.sap import program as sap
 
 FALL_1 = LC_ROW  # Ann Lee, Fall 2026
 FALL_2 = {**LC_ROW, "Timestamp": "2026/10/20 9:00:00 a.m. AST"}  # a later submission, same student and term

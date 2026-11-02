@@ -64,7 +64,7 @@ deleted) stays as it is, with its batch, ratings and decision:
 - if it is still verified it is raised as a `missing_from_export` alert for a person.
 
 **Completed applications are final.** An application is complete once the committee's decision is recorded (`decided`
-stage; `COMPLETE_STAGE` in `sap.py` is the single definition), even if its row has left the export. Any other application
+stage; `COMPLETE_STAGE` in `utsu_programs/sap/program.py` is the single definition), even if its row has left the export. Any other application
 of the student for that term becomes `not_considered`. Other terms are unaffected. See
 [Student Aid Bursary Program](Student-Aid-Bursary-Program).
 

@@ -7,7 +7,8 @@ import pytest
 from test_agm import students_db
 from test_sap import LC_ROW, form_csv as sap_form
 from test_identity import run_senate, senate_file, write_rows
-from utsu_core import sap, verification
+from utsu_core import verification
+from utsu_programs.sap import program as sap
 from utsu_core.importing_data import ascii_digits
 from utsu_mail.recipients import read_csv, valid_email
 from utsu_std.csv_safe import open_csv, read_text

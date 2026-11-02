@@ -1,9 +1,9 @@
 # AGM RSVPs
 
-`src/utsu_core/agm.py` processes the AGM voter RSVP export and does its verification.
+`src/utsu_programs/agm/program.py` processes the AGM voter RSVP export and does its verification.
 
 ```powershell
-python -m utsu_core.main --program agm --agm_file "secrets/RSVP.csv"
+utsu-agm --agm_file "secrets/RSVP.csv"
 ```
 
 ## Form export
@@ -87,8 +87,8 @@ Print or open `agm_list_all.csv` and mark `checked_in` for people who arrive. Th
 ## Verification on its own
 
 ```powershell
-python -m utsu_core.agm --agm_file "secrets/RSVP.csv" --db secrets/db.sqlite [--output_dir DIR]
-python -m utsu_core.agm --testing
+utsu-agm --verify_only --agm_file "secrets/RSVP.csv" --db secrets/db.sqlite [--output_dir DIR]
+utsu-agm --verify_only --testing
 ```
 
 Writes `agm_verification.csv` (status, reason, match method, flags per person) and no lists or database rows.

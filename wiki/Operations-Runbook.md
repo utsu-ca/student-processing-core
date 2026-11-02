@@ -15,7 +15,7 @@ A checklist for running a real cycle. Replace paths as needed; all commands run 
 ## 1. Import the roster and verify applications
 
 ```powershell
-python -m utsu_core.main --db secrets/db.sqlite --import_uoft_data secrets/uoft_data.csv `
+utsu-all --db secrets/db.sqlite --import_uoft_data secrets/uoft_data.csv `
     --verify_student secrets/senate.csv --sap_file secrets/sabp.csv --agm_file secrets/agm.csv `
     --reviewers "Ann,Bo,Cy"
 ```
@@ -58,10 +58,10 @@ If the roster itself changed: add `--reimport_uoft_data`. A student who was veri
 1. Run with `--reviewers` (or run without and hand the sheets out yourself, then `--issue_batches all`).
 2. Send each reviewer **only** their folder `sap_batches/by_reviewer/<name>/`. They fill in `need_level` (0-5) and `notes`
    in the `.csv` and return it to the same place.
-3. `python -m utsu_core.main --program sap --merge_reviews`, then resolve `discuss` and `incomplete` rows in
+3. `utsu-sap --merge_reviews`, then resolve `discuss` and `incomplete` rows in
    `sap_merged_ratings.csv`.
 4. Add `decision` (and `awarded_amount`) to that file or a new one, then
-   `python -m utsu_core.main --program sap --record_decisions decisions.csv`.
+   `utsu-sap --record_decisions decisions.csv`.
 5. Decided applications are complete and final for their term.
 
 ## 6. AGM
@@ -94,6 +94,6 @@ python -m utsu_mail agm_more_info --recipients secrets/output/notices_agm_more_i
 | `The export needs at least one of these columns to identify people` | The export has no name or student-number column |
 | Everything is `unverified` | The roster table is empty or the wrong file was imported; check `SELECT COUNT(*) FROM uoft_data` |
 | `Seats file not found, skipping seating` | `--seats_file` path wrong |
-| `FileNotFoundError` for the Senate file on an SABP-only run | Use `--program sap` (the default `all` always runs Senate) |
+| `FileNotFoundError` for the Senate file on an SABP-only run | Run `utsu-sap` (`utsu-all` always tries Senate, and only skips it, with a warning, when the file is missing) |
 | Reviewer sheet warning "no longer matches batch" | The batch changed after issue; the reviewer's sheet is left untouched on purpose |
 | `Config file not found` | `config.json` is created on the first normal run |

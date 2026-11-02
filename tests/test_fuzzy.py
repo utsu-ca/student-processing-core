@@ -2,7 +2,8 @@
 import csv
 
 from test_agm import form_csv, rsvp, students_db
-from utsu_core import agm, verification
+from utsu_core import verification
+from utsu_programs.agm import program as agm
 
 
 def test_first_name_similarity_allows_missing_middle_names_and_typos():

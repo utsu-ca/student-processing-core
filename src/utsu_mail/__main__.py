@@ -12,6 +12,7 @@ import os
 import sys
 from pathlib import Path
 
+from utsu_core.resources import schema_dirs
 from utsu_mail.campaign import already_sent, prepare, review, send_all
 from utsu_mail.campaign import format_preview
 from utsu_mail.recipients import read_csv, read_sql, split_by_validity
@@ -28,7 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="utsu_mail", description="Send templated emails to a list of recipients over SMTP.")
     p.add_argument("template", nargs="?", help="Template name (a .txt file in the template directory, without extension)")
     p.add_argument("--template_dir", default=DEFAULT_TEMPLATE_DIR, help="Directory containing templates")
-    p.add_argument("--schema_dir", default="src/schema", help="Directory of .sql schema files used to validate fields")
+    p.add_argument("--schema_dir", help="Directory of .sql schema files used to validate fields "
+                                        "(default: the schemas of utsu_core and every program)")
     p.add_argument("--recipients", help="CSV of recipients (default: <output_dir>/verified.csv)")
     p.add_argument("--query", help="Read recipients with this SELECT against --db instead of a CSV; "
                                    "column names become template fields")
@@ -84,7 +86,7 @@ def main(argv=None) -> int:
         sys.stdout.reconfigure(errors="replace")
 
     cfg = load_config_file(str(absfile(args.config)))
-    schema = schema_fields(absfile(args.schema_dir))
+    schema = schema_fields([absfile(args.schema_dir)] if args.schema_dir else schema_dirs("utsu_core", "utsu_programs"))
 
     try:
         if args.list_fields:

@@ -3,7 +3,7 @@
 `utsu_mail` sends mail-merge emails directly over SMTP, with a safe preview-and-confirm workflow.
 
 ```powershell
-python -m utsu_mail --list_fields                 # templates + columns from src/schema/*.sql
+python -m utsu_mail --list_fields                 # templates + columns from the programs' schema.sql files
 python -m utsu_mail senate_verified --dry_run     # render a preview, never connects to SMTP
 python -m utsu_mail senate_verified               # preview, confirm, send
 ```
@@ -102,7 +102,7 @@ now match the roster are skipped (nothing to ask for). A rejection needs `--reas
 |---|---|---|
 | `template` | | template name (file stem) |
 | `--template_dir` | `templates/email` | |
-| `--schema_dir` | `src/schema` | `.sql` files used to validate fields |
+| `--schema_dir` | *(the schemas of `utsu_core` and every program)* | `.sql` files used to validate fields |
 | `--recipients` | `<output_dir>/verified.csv` | recipient CSV |
 | `--query` | | read recipients with a SELECT instead |
 | `--db` | `db` from config | database for `--query` |

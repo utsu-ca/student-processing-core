@@ -8,9 +8,22 @@ from pathlib import Path
 
 from utsu_std.csv_safe import open_csv
 from utsu_std.parsing_utils import division_code, get_trunc_id
-from utsu_std.utils import clean_text, normalize_case
+from utsu_std.utils import UOFT_MAIL_DOMAIN, clean_text, normalize_case
 
 logger = logging.getLogger(__name__)
+
+
+def is_uoft_email(email: str) -> bool:
+    """
+    Whether an address is a UofT student email: only `@mail.utoronto.ca` counts (case and surrounding spaces are
+    ignored). A blank address, another domain (even `@utoronto.ca`) or text that is not an address does not.
+
+    >>> [is_uoft_email(v) for v in ("ann.lee@mail.utoronto.ca", " Ann@MAIL.UTORONTO.CA ", "ann@utoronto.ca",
+    ...                             "ann@gmail.com", "", None, "@mail.utoronto.ca", "a b@mail.utoronto.ca")]
+    [True, True, False, False, False, False, False, False]
+    """
+    local, _, domain = (email or "").strip().lower().rpartition("@")
+    return bool(local) and domain == UOFT_MAIL_DOMAIN and not re.search(r"[\s@]", local)
 
 
 METHOD_NAME = "name only"
@@ -245,6 +258,20 @@ def match_students(people: list[dict], cursor: sqlite3.Cursor, name_key: str = "
                                for score, u, t, first, last, d in scored[:MAX_CANDIDATES])
             results.append(replace(match, candidates=candidates))
     return results
+
+
+def truncated_numbers(cursor: sqlite3.Cursor, uoft_uuids) -> dict[str, str]:
+    """
+    The roster's truncated student number (`xxxxx3971x`) for each uoft_data uuid, read from the database. A uuid
+    that is not there, or has no number, is left out.
+    """
+    wanted = sorted({u for u in uoft_uuids if u})
+    found: dict[str, str] = {}
+    for start in range(0, len(wanted), _SQL_VARIABLES):
+        chunk = wanted[start:start + _SQL_VARIABLES]
+        cursor.execute(f"SELECT uuid, trunc_id FROM uoft_data WHERE uuid IN ({','.join('?' * len(chunk))})", chunk)
+        found.update({u: f"xxxxx{t:04d}x" for u, t in cursor.fetchall() if t is not None})
+    return found
 
 
 def construct_lookup_tables(mapping_file: Path) -> list[dict[str, str]]:

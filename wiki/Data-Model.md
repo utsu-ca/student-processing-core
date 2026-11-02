@@ -1,6 +1,7 @@
 # Data Model
 
-All data is in one SQLite file (`--db`, default `secrets/db.sqlite`). Table definitions are in `src/schema/*.sql`; tables
+All data is in one SQLite file (`--db`, default `secrets/db.sqlite`). Table definitions are in the `schema.sql` of each
+program (`src/utsu_programs/<program>/`) and `src/utsu_core/schema/uoft_data.sql`; tables
 are created on demand. Treat the database as **private**: it holds the roster and, for SABP, the last four digits of student numbers.
 
 ```mermaid

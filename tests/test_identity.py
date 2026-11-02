@@ -8,7 +8,10 @@ import pytest
 
 from test_agm import HEADERS as AGM_HEADERS, form_csv as agm_form, rsvp, students_db
 from test_sap import AP_ROW, LC_ROW, form_csv as sap_form
-from utsu_core import agm, sap, senate, verification
+from utsu_core import verification
+from utsu_programs.agm import program as agm
+from utsu_programs.sap import program as sap
+from utsu_programs.senate import program as senate
 from utsu_mail import campaign
 from utsu_mail.recipients import read_csv
 from utsu_std.csv_safe import SafeDictWriter, read_cell, safe_cell

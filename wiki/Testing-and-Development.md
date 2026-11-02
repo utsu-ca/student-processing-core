@@ -23,12 +23,13 @@ python -m pytest --doctest-modules src    # doctests embedded in the source (39)
 | `test_mail.py` | templates, recipients, notices, review prompt, send loop |
 | `test_lookup.py` | lookup tables |
 
-Not covered by tests (see [Code Review](Code-Review#test-gaps)): the argparse entry point of `main.py`, `seating.py` and
-the real `SmtpSender` connection.
+Not covered by tests (see [Code Review](Code-Review#test-gaps)): the argparse wiring of the commands, `seating.py` and
+the real `SmtpSender` connection. `test_programs.py` checks that each program's spec and schema agree, that every
+command has its own flags, and that programs depend only on `utsu_core`.
 
 ## Fake data
 
-`python -m utsu_core.main --testing` generates and runs everything (see [Getting Started](Getting-Started#try-it-with-fake-data-no-personal-data-needed)).
+`utsu-all --testing` generates and runs everything (see [Getting Started](Getting-Started#try-it-with-fake-data-no-personal-data-needed)).
 `python testing/generate_fake_data.py` regenerates just the data: the roster first (from the seats file), then Senate,
 SABP and AGM exports that each draw applicants from the roster. Flags: `--only`, `--seed`, `--students`, `--sabp-rows`,
 `--sabp-unmatched`, `--sabp-start`, `--sabp-end`, `--agm-rows`. Per-form logic is in `testing/generate_fake_*.py`. The

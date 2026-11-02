@@ -1,11 +1,11 @@
 # Student Aid Bursary Program
 
-`src/utsu_core/sap.py` processes the SABP form export (Stages 1-3 of SAS-002). The financial-need scoring is in
-`src/utsu_core/wfni.py`. The program verifies applicants, scores them, cuts anonymized review batches for the
+`src/utsu_programs/sap/program.py` processes the SABP form export (Stages 1-3 of SAS-002). The financial-need scoring is in
+`src/utsu_programs/sap/wfni.py`. The program verifies applicants, scores them, cuts anonymized review batches for the
 committee, merges reviewer ratings, and records final decisions. **Disbursement is not tracked.**
 
 ```powershell
-python -m utsu_core.main --program sap --sap_file secrets/sabp.csv [--batch_size 50] [--reviewers "Ann,Bo,Cy"]
+utsu-sap --sap_file secrets/sabp.csv [--batch_size 50] [--reviewers "Ann,Bo,Cy"]
 ```
 
 ## Form export
@@ -103,7 +103,7 @@ If sheets are handed out without `--reviewers`, record that with `--issue_batche
 ## Merging reviews
 
 ```powershell
-python -m utsu_core.main --program sap --merge_reviews
+utsu-sap --merge_reviews
 ```
 
 Writes `sap_merged_ratings.csv` and fills the `sap_review` table. Per application: reviewers, each rating, the mean, the
@@ -139,9 +139,9 @@ forward; reprocessing never moves it back.
 | `decided` | `--record_decisions decisions.csv` |
 
 ```powershell
-python -m utsu_core.main --program sap --issue_batches all      # sheets were handed out without --reviewers
-python -m utsu_core.main --program sap --merge_reviews
-python -m utsu_core.main --program sap --record_decisions decisions.csv
+utsu-sap --issue_batches all      # sheets were handed out without --reviewers
+utsu-sap --merge_reviews
+utsu-sap --record_decisions decisions.csv
 ```
 
 `decisions.csv` needs `uuid` and `decision`; `awarded_amount` is optional (`0` is allowed). Other columns (for example

@@ -12,12 +12,15 @@ import pytest
 from test_agm import students_db
 from test_mail import SETTINGS
 from test_sap import LC_ROW, fill_sheet, form_csv as sap_form, students_db as sap_students
-from utsu_core import agm, importing_data, sap, wfni
+from utsu_core import importing_data
+from utsu_programs.agm import program as agm
+from utsu_programs.sap import program as sap, wfni
 from utsu_mail.campaign import Prepared, send_all
 from utsu_mail.notices import DIVISION_FIELD, NUMBER_FIELD, diagnose
 from utsu_mail.templates import RenderedMessage
 from utsu_mail.transport import SmtpSender
 from utsu_std.utils import absfile, explicit_flags, load_and_merge_config, setup_logging
+from utsu_core.resources import package_text
 from utsu_core.verification import construct_lookup_tables
 
 ROSTER_HEADER = "First Name,Last Name,Truncated Student Number,Faculty,Division\n"
@@ -66,16 +69,17 @@ def test_identical_roster_rows_are_kept_once(tmp_path, caplog):
     assert conn.execute("SELECT COUNT(*) FROM uoft_data").fetchone() == (1,) and "duplicate" in caplog.text
 
 
-def test_main_imports_again_when_the_student_table_is_empty(tmp_path):
-    from utsu_core.main import main
+def test_agm_command_imports_again_when_the_student_table_is_empty(tmp_path):
+    from utsu_core.cli import execute
+    from utsu_programs.agm.cli import PROGRAM
 
     roster = tmp_path / "roster.csv"
     roster.write_text(ROSTER_HEADER + "Ann,Lee,xxxxx3971x,ARTSC,UC\n", encoding="utf-8")
     db = tmp_path / "db.sqlite"
-    cfg = {"db": str(db), "no_backup": True, "import_uoft_data": str(roster), "program": "agm",
+    cfg = {"db": str(db), "no_backup": True, "import_uoft_data": str(roster),
            "agm_file": "", "output_dir": str(tmp_path / "out")}
     with pytest.raises(ValueError, match="AGM"):  # the roster is imported first, then the missing export is refused
-        main(cfg)
+        execute(cfg, [PROGRAM])
     conn = sqlite3.connect(db)
     assert conn.execute("SELECT COUNT(*) FROM uoft_data").fetchone() == (1,)
     conn.execute("DELETE FROM uoft_data")
@@ -83,19 +87,20 @@ def test_main_imports_again_when_the_student_table_is_empty(tmp_path):
     conn.close()
 
     with pytest.raises(ValueError, match="AGM"):  # the table is empty: it is imported again
-        main(cfg)
+        execute(cfg, [PROGRAM])
     conn = sqlite3.connect(db)
     assert conn.execute("SELECT COUNT(*) FROM uoft_data").fetchone() == (1,)
     conn.close()
 
 
 def test_a_missing_roster_file_is_an_error_exit(tmp_path):
-    from utsu_core.main import main
+    from utsu_core.cli import execute
+    from utsu_programs.agm.cli import PROGRAM
 
     cfg = {"db": str(tmp_path / "db.sqlite"), "no_backup": True, "import_uoft_data": str(tmp_path / "none.csv"),
-           "program": "agm", "output_dir": str(tmp_path / "out")}
+           "output_dir": str(tmp_path / "out")}
     with pytest.raises(FileNotFoundError):
-        main(cfg)
+        execute(cfg, [PROGRAM])
 
 
 # ---- SABP ------------------------------------------------------------------------------------------------------
@@ -252,18 +257,20 @@ def test_a_flag_equal_to_its_default_still_overrides_the_config(tmp_path):
     assert load_and_merge_config(parser.parse_args([]), parser, explicit=set())["seed"] == 7  # not given: the config's
 
 
-def test_program_all_skips_a_missing_senate_export(tmp_path, caplog):
-    from utsu_core.main import main
+def test_utsu_all_skips_a_missing_senate_export(tmp_path, caplog):
+    from utsu_core.cli import execute
+    from utsu_programs.runner import run
+    from utsu_programs.senate.cli import PROGRAM as SENATE
 
     roster = tmp_path / "roster.csv"
     roster.write_text(ROSTER_HEADER + "Ann,Lee,xxxxx3971x,ARTSC,UC\n", encoding="utf-8")
-    cfg = {"db": str(tmp_path / "db.sqlite"), "no_backup": True, "import_uoft_data": str(roster), "program": "all",
+    cfg = {"db": str(tmp_path / "db.sqlite"), "no_backup": True, "import_uoft_data": str(roster),
            "verify_student": str(tmp_path / "none.csv"), "output_dir": str(tmp_path / "out")}
     with caplog.at_level(logging.WARNING):
-        main(cfg)  # no Senate export: Senate and seating are skipped, and nothing else is asked for
+        run(cfg)  # no Senate export: Senate and seating are skipped, and nothing else is asked for
     assert "skipping Senate verification" in caplog.text
     with pytest.raises(FileNotFoundError):
-        main({**cfg, "program": "senate"})
+        execute(cfg, [SENATE])
 
 
 def test_program_is_never_saved_to_the_config(tmp_path):
@@ -313,7 +320,7 @@ def test_send_survives_a_failed_reconnect(tmp_path):
 
 def test_diagnose_asks_for_what_a_shared_name_still_needs():
     conn = sqlite3.connect(":memory:")
-    conn.executescript(Path(absfile("src/schema/uoft_data.sql")).read_text(encoding="utf-8"))
+    conn.executescript(package_text("utsu_core", "schema/uoft_data.sql"))
     conn.executemany("INSERT INTO uoft_data (uuid, trunc_id, first_name, last_name, full_name, division, faculty) "
                      "VALUES (?, 1111, 'Sam', 'Lee', 'Sam Lee', ?, 'ARTSC')", [("a", "UC"), ("b", "UC")])
     cur = conn.cursor()

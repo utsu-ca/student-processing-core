@@ -14,9 +14,21 @@ dependencies = []
 [project.optional-dependencies]
 dev = ["pytest"]
 
+[project.scripts]
+utsu-all = "utsu_programs.runner:main"
+utsu-senate = "utsu_programs.senate.cli:main"
+utsu-sap = "utsu_programs.sap.cli:main"
+utsu-agm = "utsu_programs.agm.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["utsu_core*", "utsu_std*", "utsu_mail*"]
+include = ["utsu_core*", "utsu_programs*", "utsu_std*", "utsu_mail*"]
+
+[tool.setuptools.package-data]
+utsu_core = ["schema/*.sql"]
+"utsu_programs.senate" = ["*.sql"]
+"utsu_programs.sap" = ["*.sql"]
+"utsu_programs.agm" = ["*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

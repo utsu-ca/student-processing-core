@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from utsu_core import sap
+from utsu_programs.sap import program as sap
+from utsu_core.resources import package_text
 from utsu_core.verification import construct_lookup_tables
 from utsu_std.utils import absfile
 
@@ -41,7 +42,7 @@ def form_csv(path, rows):
 
 def students_db(*people):
     conn = sqlite3.connect(":memory:")
-    conn.executescript(Path(absfile("src/schema/uoft_data.sql")).read_text(encoding="utf-8"))
+    conn.executescript(package_text("utsu_core", "schema/uoft_data.sql"))
     for i, (first, last, trunc) in enumerate(people):
         conn.execute("INSERT INTO uoft_data (uuid, trunc_id, first_name, last_name, full_name, division, faculty) "
                      "VALUES (?, ?, ?, ?, ?, 'UC', 'ARTSC')", (f"u{i}", trunc, first, last, f"{first} {last}"))

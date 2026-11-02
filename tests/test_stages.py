@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from test_sap import AP_ROW, LC_ROW, fill_sheet, form_csv, students_db
-from utsu_core import sap
+from utsu_programs.sap import program as sap
 
 
 def person(first, last, number, ts):

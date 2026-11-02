@@ -5,13 +5,13 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def schema_fields(schema_dir: Path) -> dict[str, list[str]]:
+def schema_fields(schema_dirs) -> dict[str, list[str]]:
     """
-    Column names per table, read from the project's `.sql` schema files (applied to a throwaway
+    Column names per table, read from the `.sql` schema files in these folders (applied to a throwaway
     in-memory database), so templates can be checked against the real data model.
     """
     fields: dict[str, list[str]] = {}
-    for sql_file in sorted(Path(schema_dir).glob("*.sql")):
+    for sql_file in sorted(f for folder in schema_dirs for f in Path(folder).glob("*.sql")):
         conn = sqlite3.connect(":memory:")
         try:
             conn.executescript(sql_file.read_text(encoding="utf-8-sig"))

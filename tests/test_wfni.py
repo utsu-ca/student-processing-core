@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from test_sap import LC_ROW, form_csv, students_db
-from utsu_core import sap, wfni
+from utsu_programs.sap import program as sap, wfni
 from utsu_std.utils import absfile
 
 DEFAULT = Path(absfile(wfni.WEIGHTS_FILE))

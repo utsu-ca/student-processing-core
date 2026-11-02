@@ -23,8 +23,7 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from utsu_core.agm import is_uoft_email
-from utsu_core.verification import match_students
+from utsu_core.verification import is_uoft_email, match_students
 from utsu_mail.recipients import read_csv
 from utsu_std.csv_safe import write_rows
 from utsu_std.utils import absfile, load_config_file, student_uuid_for

@@ -437,7 +437,7 @@ def absfile(relative_path: Path | str) -> Path:
 
     Absolute paths are returned unchanged.
 
-    >>> absfile("src/schema/uoft_data.sql") == find_project_root() / "src" / "schema" / "uoft_data.sql"
+    >>> absfile("data/wfni_weights.csv") == find_project_root() / "data" / "wfni_weights.csv"
     True
     """
     path = Path(relative_path)

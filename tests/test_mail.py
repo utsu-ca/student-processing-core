@@ -9,6 +9,7 @@ from utsu_mail import campaign, transport
 from utsu_mail.__main__ import main
 from utsu_mail.notices import NAME_FIELD, NUMBER_FIELD, diagnose, main as notices_main
 from utsu_mail.recipients import read_csv as read_csv_rows, read_sql, split_by_validity
+from utsu_core.resources import package_text, schema_dirs
 from utsu_mail.schema import schema_fields
 from utsu_mail.templates import Template, TemplateError, load_template, parse_template
 from utsu_std.utils import student_uuid_for
@@ -57,8 +58,9 @@ def test_notice_templates_are_tracked_and_use_known_fields():
 
 
 def test_schema_fields_reads_sql_files():
-    fields = schema_fields(ROOT / "src" / "schema")
+    fields = schema_fields(schema_dirs("utsu_core", "utsu_programs"))
     assert "first_name" in fields["uoft_data"]
+    assert {"senate_application", "student_aid", "agm_rsvp"} <= set(fields)  # every program's schema is found
 
 
 def test_split_by_validity():
@@ -140,7 +142,7 @@ def test_cli_dry_run_and_cancel(monkeypatch, tmp_path, capsys):
 
 def make_uoft_db(path):
     conn = sqlite3.connect(path)
-    conn.executescript((ROOT / "src" / "schema" / "uoft_data.sql").read_text(encoding="utf-8-sig"))
+    conn.executescript(package_text("utsu_core", "schema/uoft_data.sql"))
     conn.executemany(
         "INSERT INTO uoft_data (uuid, trunc_id, first_name, last_name, full_name, division, faculty) "
         "VALUES (?, ?, 'f', 'l', ?, 'UC', 'A&S')",

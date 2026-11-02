@@ -3,9 +3,9 @@
 ## Requirements
 
 - Python **3.12 or newer**. There are no runtime dependencies. `pytest` is the only optional (dev) dependency.
-- The package must be installed **editable** (see below). The code finds `data/`, `templates/`, `src/schema/`,
+- The package must be installed **editable** (see below). The code finds `data/`, `templates/`,
   `secrets/` and `testing/` by walking up to the project root (the folder with `pyproject.toml`), so a regular
-  (non-editable) install into `site-packages` will not find them.
+  (non-editable) install into `site-packages` will not find them. (The SQL schemas ship inside the packages.)
 
 ## Install
 
@@ -17,17 +17,19 @@ pip install -e ".[dev]"
 
 With [uv](https://docs.astral.sh/uv/) instead: `uv run --extra dev python -m pytest` creates the environment on demand.
 
-The editable install puts `utsu_core`, `utsu_std` and `utsu_mail` on the import path, so every `python -m ...` command
-works from **any** directory. Relative paths in flags and in `config.json` are always resolved from the project root,
-never from the current directory.
+The editable install puts `utsu_core`, `utsu_programs`, `utsu_std` and `utsu_mail` on the import path and installs the
+commands `utsu-senate`, `utsu-sap`, `utsu-agm` and `utsu-all` (also `python -m utsu_programs.<program>`), so every
+command works from **any** directory. Relative paths in flags and in `config.json` are always resolved from the
+project root, never from the current directory.
 
 ## Try it with fake data (no personal data needed)
 
 ```powershell
-python -m utsu_core.main --testing
+utsu-all --testing
 ```
 
-This generates a fake roster and fake Senate, SABP and AGM exports, then runs the whole pipeline on them. Everything is
+This generates a fake roster and fake Senate, SABP and AGM exports, then runs the whole pipeline on them (use
+`utsu-senate`, `utsu-sap` or `utsu-agm` with `--testing` to run just one program). Everything is
 written to `testing/output/` (gitignored, rebuilt each run, seeded so the data is identical every time):
 
 | File(s) | From |
@@ -43,11 +45,11 @@ In testing mode `config.json` is neither read nor written, and a fresh database 
 `--seed` or `--seats_file` still override the testing defaults. Reviewers `Reviewer_A,Reviewer_B,Reviewer_C` are
 assigned automatically.
 
-One-off actions (`--merge_reviews`, `--issue_batches`, `--record_decisions`)
+One-off actions (`--merge_reviews`, `--issue_batches`, `--record_decisions`, `--verify_only`)
 combined with `--testing` do **not** rebuild the fake data or the database; they work on the last testing run's:
 
 ```powershell
-python -m utsu_core.main --testing --merge_reviews
+utsu-sap --testing --merge_reviews
 ```
 
 > Known quirk: testing mode deletes and rebuilds the database but not `testing/output/sap_batches/by_reviewer/`.
@@ -64,7 +66,7 @@ python -m utsu_core.main --testing --merge_reviews
 4. Run, for example:
 
 ```powershell
-python -m utsu_core.main --db secrets/db.sqlite --import_uoft_data secrets/uoft_data.csv `
+utsu-all --db secrets/db.sqlite --import_uoft_data secrets/uoft_data.csv `
     --verify_student secrets/senate.csv --sap_file secrets/sabp.csv --agm_file secrets/agm.csv `
     --reviewers "Ann,Bo,Cy" --output_dir secrets/output
 ```

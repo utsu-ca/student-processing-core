@@ -61,7 +61,7 @@ Decisions that came with it:
 | N8, N9 | Low | Roster | Blank line crashed the import; cleaned copy left on disk | **Fixed** (no copy is written any more) |
 | N10 | Low | Mail | A shared name asked for the number again | **Fixed** (the email still says which detail failed, by design) |
 | N11 | Low | SABP | A rating that was blanked stayed in `sap_review` | **Fixed** |
-| L11 | Low | Packaging | `data/`, `templates/`, `src/schema/` are found through the project root, so only an editable install works | Open, documented in [Getting Started](Getting-Started#requirements) |
+| L11 | Low | Packaging | `data/` and `templates/` are found through the project root, so only an editable install works (the SQL schemas now ship inside their packages) | Open, documented in [Getting Started](Getting-Started#requirements) |
 | L12 | Low | Roster | The roster uuid joins the values without a separator | Open (negligible: other fields differ) |
 
 ### AGM trace (second pass)
@@ -106,7 +106,7 @@ Decisions that came with it:
 
 ## Test gaps
 
-- The argparse entry point of `utsu_core.main` (the pieces are tested, the wiring is not).
-- `seating.py`: add property tests (each applicant at most once, no constituency over capacity, nobody seated where
+- The argparse wiring of the commands (`utsu_core.cli`; the pieces are tested, the wiring is not).
+- `utsu_programs/senate/seating.py`: add property tests (each applicant at most once, no constituency over capacity, nobody seated where
   they marked none, same seed gives the same result, delegates take division seats).
 - The real `SmtpSender` connect and login rules, perhaps with a fake `smtplib`.

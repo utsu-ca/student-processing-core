@@ -11,6 +11,8 @@ import logging
 import math
 import re
 import sqlite3
+import zipfile
+from xml.etree import ElementTree
 from datetime import datetime
 from pathlib import Path
 
@@ -365,6 +367,60 @@ def _write_sheet(rows: list[dict], number: int, directory: Path, reviewer: str |
     (directory / f"batch_{number:03d}.txt").write_text("\n".join(lines), encoding="utf-8")
 
 
+def _docx_lines(path: Path) -> list[str]:
+    """Paragraph texts of a .docx (e.g. batch_NNN.txt opened and saved by Google Docs), without extra packages."""
+    ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    with zipfile.ZipFile(path) as z:
+        root = ElementTree.fromstring(z.read("word/document.xml"))
+    lines = []
+    for para in root.iter(f"{ns}p"):
+        parts = []
+        for el in para.iter():
+            if el.tag == f"{ns}t":
+                parts.append(el.text or "")
+            elif el.tag == f"{ns}tab":
+                parts.append(" ")
+            elif el.tag in (f"{ns}br", f"{ns}cr"):
+                parts.append("\n")
+        lines.extend("".join(parts).split("\n"))
+    return lines
+
+
+def _read_text_sheet(path: Path) -> list[dict]:
+    """Ratings from a read-only batch sheet (.txt or .docx): rows of record_id, need_level, notes."""
+    lines = _docx_lines(path) if path.suffix.lower() == ".docx" else path.read_text(encoding="utf-8-sig").splitlines()
+    rows, current, in_notes = [], None, False
+    for line in lines:
+        text = line.strip()
+        if m := re.match(r"\[(B\d+-\d+)\]", text):
+            current, in_notes = {"record_id": m.group(1), "need_level": "", "notes": ""}, False
+            rows.append(current)
+        elif current is None:
+            continue
+        elif m := re.match(r"Need level\s*\(0-5\)\s*:(.*?)(?:Notes\s*:(.*))?$", text, re.I):
+            current["need_level"] = m.group(1).replace("_", "").strip()
+            current["notes"] = (m.group(2) or "").replace("_", " ").strip()
+            in_notes = True
+        elif re.fullmatch(r"-{5,}", text):
+            in_notes = False
+        elif in_notes and text:
+            current["notes"] = f"{current['notes']} {text}".strip()
+    return rows
+
+
+def _sheet_rows(csv_sheet: Path, uuid_of: dict[str, str]) -> list[dict]:
+    """
+    Rows of one reviewer's batch sheet. The reviewer may have filled in the csv, or the .txt, or a .docx saved
+    from it (Google Docs opens .txt files as documents); the most recently saved of them is used.
+    """
+    candidates = [p for p in (csv_sheet, csv_sheet.with_suffix(".docx"), csv_sheet.with_suffix(".txt")) if p.exists()]
+    sheet = max(candidates, key=lambda p: p.stat().st_mtime)
+    if sheet == csv_sheet:
+        with open_csv(sheet) as f:
+            return list(csv.DictReader(f))
+    return [{"uuid": uuid_of.get(r["record_id"], r["record_id"]), **r} for r in _read_text_sheet(sheet)]
+
+
 def _sheet_uuids(path: Path) -> set[str]:
     with open_csv(path) as f:
         return {row.get("uuid", "") for row in csv.DictReader(f)}
@@ -409,6 +465,7 @@ def merge_reviews(conn: sqlite3.Connection, output_dir: Path | str = "secrets/ou
     batch_dir = out / "sap_batches"
     with open_csv(out / "sap_verified.csv") as f:
         applications = {row["uuid"]: row for row in csv.DictReader(f)}
+    uuid_of = {f"B{int(a['batch']):03d}-{int(a['record']):02d}": u for u, a in applications.items()}
     ensure_schema(conn)
     assigned: dict[int, list[str]] = {}
     for batch, reviewer in conn.execute("SELECT batch, reviewer FROM sap_batch_reviewer"):
@@ -419,26 +476,25 @@ def merge_reviews(conn: sqlite3.Connection, output_dir: Path | str = "secrets/ou
     problems: list[str] = []
     for sheet in sorted(batch_dir.glob("by_reviewer/*/batch_*.csv")):
         reviewer = sheet.parent.name
-        with open_csv(sheet) as f:
-            for row in csv.DictReader(f):
-                uuid, raw = row.get("uuid", ""), (row.get("need_level") or "").strip()
-                if uuid not in applications:
-                    problems.append(f"{reviewer}: {sheet.name} has an unknown application {uuid!r}")
-                elif reviewer not in assigned.get(int(applications[uuid]["batch"]), ()):
-                    problems.append(f"{reviewer}: {sheet.name} is not a sheet assigned to this reviewer; its ratings "
-                                    f"are ignored")
-                    break
-                elif raw:
-                    try:
-                        level = int(float(raw))
-                        if level not in RATING_LEVELS or level != float(raw):
-                            raise ValueError
-                    except (ValueError, OverflowError):
-                        problems.append(f"{reviewer}: {row.get('record_id')} has an invalid need level {raw!r}")
-                        continue
-                    ratings.setdefault(uuid, {})[reviewer] = (level, (row.get("notes") or "").strip())
-                else:
-                    cleared.append((uuid, reviewer))
+        for row in _sheet_rows(sheet, uuid_of):
+            uuid, raw = row.get("uuid", ""), (row.get("need_level") or "").strip()
+            if uuid not in applications:
+                problems.append(f"{reviewer}: {sheet.name} has an unknown application {uuid!r}")
+            elif reviewer not in assigned.get(int(applications[uuid]["batch"]), ()):
+                problems.append(f"{reviewer}: {sheet.name} is not a sheet assigned to this reviewer; its ratings "
+                                f"are ignored")
+                break
+            elif raw:
+                try:
+                    level = int(float(raw))
+                    if level not in RATING_LEVELS or level != float(raw):
+                        raise ValueError
+                except (ValueError, OverflowError):
+                    problems.append(f"{reviewer}: {row.get('record_id')} has an invalid need level {raw!r}")
+                    continue
+                ratings.setdefault(uuid, {})[reviewer] = (level, (row.get("notes") or "").strip())
+            else:
+                cleared.append((uuid, reviewer))
 
     rows = []
     for uuid, app in sorted(applications.items(), key=lambda kv: (int(kv[1]["batch"]), int(kv[1]["record"]))):

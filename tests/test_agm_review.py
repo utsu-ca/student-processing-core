@@ -6,7 +6,8 @@ import sqlite3
 import pytest
 
 from test_agm import form_csv, rsvp, students_db
-from utsu_core import agm, selection
+from utsu_core import selection
+from utsu_programs.agm import program as agm
 from utsu_mail.notices import EMAIL_FIELD, diagnose
 from utsu_std import csv_safe
 from utsu_std.database import replace_table

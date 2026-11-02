@@ -39,10 +39,10 @@ the standard library only; SQLite is the database).
 ## Repository layout
 
 ```
-src/utsu_core/   verification pipeline (main.py is the CLI)
-src/utsu_std/    shared helpers: text cleaning, ids, database, safe CSV
-src/utsu_mail/   mail-merge CLI and notice builder
-src/schema/      SQLite table definitions
+src/utsu_core/      the shared engine: student data, verification, selection, integrity, ProgramSpec, CLI plumbing
+src/utsu_programs/  one package per program (senate, sap, agm): its spec, schema, outputs and command
+src/utsu_std/       shared helpers: text cleaning, ids, database, safe CSV
+src/utsu_mail/      mail-merge CLI and notice builder
 data/            lookup tables, seats, WFNI weights
 templates/email/ email templates
 testing/         fake-data generators (output goes to testing/output/)
