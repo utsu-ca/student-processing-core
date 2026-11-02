@@ -80,12 +80,18 @@ class FormsModule:
             except formdef.FormError as e:
                 raise HTTPException(422, e.errors)
             key = f"{fid}:{acct['uuid']}"
-            prev = S.get("submissions", key)
-            if prev and prev["status"] in ("accepted", "rejected"):
-                raise HTTPException(409, "submission is final")
-            hist = (prev or {}).get("history", []) + [{"at": ctx.now(), "status": "submitted", "note": ""}]
-            S.put("submissions", key, {"id": key, "form_id": fid, "uuid": acct["uuid"], "version": v["version"], "hash": v["hash"],
-                                       "data": data, "status": "submitted", "updated_at": ctx.now(), "history": hist})
+            seen = {}
+
+            def save(prev):  # a decision made while the applicant was editing wins: the lock re-checks finality
+                if prev and prev["status"] in ("accepted", "rejected"):
+                    raise HTTPException(409, "submission is final")
+                seen["prev"] = prev
+                hist = (prev or {}).get("history", []) + [{"at": ctx.now(), "status": "submitted", "note": ""}]
+                return {"id": key, "form_id": fid, "uuid": acct["uuid"], "version": v["version"], "hash": v["hash"],
+                        "data": data, "status": "submitted", "updated_at": ctx.now(), "history": hist}
+
+            doc = S.update("submissions", key, save)
+            prev, hist = seen["prev"], doc["history"]
             ctx.audit.record(acct["uuid"], "submission.saved", f"form:{fid}", (prev or {}).get("data"), data, {"version": v["version"], "revision": len(hist)})
             return {"status": "submitted"}
 
@@ -130,15 +136,20 @@ class FormsModule:
             if schema["id"] != fid:
                 raise HTTPException(422, "id in the definition must match the URL")
             h = formdef.schema_hash(schema)
-            f = S.get("forms", fid) or {"id": fid, "rev": 0, "published_version": None}
-            if b.base_rev is not None and b.base_rev != f["rev"]:
-                raise HTTPException(409, {"error": "draft changed by someone else", "rev": f["rev"], "yaml": f.get("draft_yaml")})
             existing = S.get("form_versions", f"{fid}@{schema['version']}")
             if existing and existing["hash"] != h:
                 raise HTTPException(409, f"version {schema['version']} is already published with a different definition; bump the version")
-            old = f.get("draft_yaml")
-            f.update(rev=f["rev"] + 1, draft_yaml=formdef.to_yaml(schema), draft_hash=h, draft_version=schema["version"], updated_by=a["uuid"])
-            S.put("forms", fid, f)
+            seen = {}
+
+            def save(f):  # optimistic lock on the document plus the editor's base_rev: concurrent admin edits never overwrite silently
+                f = f or {"id": fid, "rev": 0, "published_version": None}
+                if b.base_rev is not None and b.base_rev != f["rev"]:
+                    raise HTTPException(409, {"error": "draft changed by someone else", "rev": f["rev"], "yaml": f.get("draft_yaml")})
+                seen["old"] = f.get("draft_yaml")
+                return {**f, "rev": f["rev"] + 1, "draft_yaml": formdef.to_yaml(schema), "draft_hash": h,
+                        "draft_version": schema["version"], "updated_by": a["uuid"]}
+
+            f, old = S.update("forms", fid, save), seen["old"]
             ctx.audit.record(a["uuid"], "form.draft_saved", f"form:{fid}", {"yaml": old}, {"yaml": f["draft_yaml"]}, {"rev": f["rev"], "version": schema["version"]})
             ctx.bus.publish(f"form:{fid}", {"rev": f["rev"], "yaml": f["draft_yaml"], "by": a["uuid"]})
             return {"rev": f["rev"], "hash": h, "version": schema["version"]}
@@ -158,9 +169,14 @@ class FormsModule:
             if not ex:
                 S.put("form_versions", key, {"id": fid, "version": schema["version"], "hash": h, "schema": schema,
                                              "yaml": f["draft_yaml"], "published_at": ctx.now(), "by": a["uuid"]})
-            prev_pub = f.get("published_version")
-            f["published_version"] = schema["version"]
-            S.put("forms", fid, f)
+            prev = {}
+
+            def setpub(cur):
+                prev["v"] = cur.get("published_version")
+                return {**cur, "published_version": schema["version"]}
+
+            f = S.update("forms", fid, setpub)
+            prev_pub = prev["v"]
             ctx.audit.record(a["uuid"], "form.published", f"form:{fid}", {"published_version": prev_pub},
                              {"published_version": f["published_version"], "yaml": f["draft_yaml"]}, {"hash": h})
             ctx.bus.publish(f"form:{fid}", {"rev": f["rev"], "published_version": f["published_version"]})
@@ -169,9 +185,14 @@ class FormsModule:
         @r.post("/admin/forms/{fid}/unpublish")
         def unpublish(fid: str, a: dict = admin):
             f = _ensure(fid)
-            prev_pub = f.get("published_version")
-            f["published_version"] = None
-            S.put("forms", fid, f)
+            prev = {}
+
+            def clear(cur):
+                prev["v"] = cur.get("published_version")
+                return {**cur, "published_version": None}
+
+            f = S.update("forms", fid, clear)
+            prev_pub = prev["v"]
             ctx.audit.record(a["uuid"], "form.unpublished", f"form:{fid}", {"published_version": prev_pub}, {"published_version": None})
             ctx.bus.publish(f"form:{fid}", {"rev": f["rev"], "published_version": None})
             return {"published_version": None}
@@ -196,16 +217,19 @@ class FormsModule:
 
         @r.post("/admin/submissions/{fid}/{uid}/status")
         def set_status(fid: str, uid: str, b: StatusIn, a: dict = admin):
-            s = S.get("submissions", f"{fid}:{uid}")
-            if not s:
-                raise HTTPException(404, "no such submission")
             if b.status not in STATUSES:
                 raise HTTPException(422, f"status must be one of {STATUSES}")
-            old_status = s["status"]
-            s["status"] = b.status
-            s["updated_at"] = ctx.now()
-            s["history"].append({"at": ctx.now(), "status": b.status, "note": b.note[:500]})
-            S.put("submissions", f"{fid}:{uid}", s)
+            seen = {}
+
+            def setstatus(s):
+                if not s:
+                    raise HTTPException(404, "no such submission")
+                seen["old"] = s["status"]
+                s["history"].append({"at": ctx.now(), "status": b.status, "note": b.note[:500]})
+                return {**s, "status": b.status, "updated_at": ctx.now()}
+
+            S.update("submissions", f"{fid}:{uid}", setstatus)
+            old_status = seen["old"]
             ctx.audit.record(a["uuid"], "submission.status", f"form:{fid}", {"status": old_status}, {"status": b.status}, {"applicant": uid, "note": b.note[:200]})
             return {"status": b.status}
 

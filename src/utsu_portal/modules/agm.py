@@ -71,8 +71,7 @@ class AgmModule:
                 raise HTTPException(403, "complete online ID verification first")
             if not cfg.zoom_url:
                 raise HTTPException(503, "Zoom link not configured")
-            if not S.get("agm_attendance", a["uuid"]):
-                S.put("agm_attendance", a["uuid"], {"uuid": a["uuid"], "mode": "online", "at": ctx.now(), "by": a["uuid"]})
+            if S.create("agm_attendance", a["uuid"], {"uuid": a["uuid"], "mode": "online", "at": ctx.now(), "by": a["uuid"]}):
                 ctx.audit.record(a["uuid"], "agm.online_join", f"user:{a['uuid']}", None, {"mode": "online"})
             return {"zoom_url": cfg.zoom_url, "sso_url": cfg.zoom_sso_url}
 
@@ -86,11 +85,14 @@ class AgmModule:
                 raise HTTPException(404, "unknown or unverified attendee")
             if not s:
                 raise HTTPException(409, f"{u['preferred_name']} {u['last_name']} has no AGM registration")
-            rec = S.get("agm_attendance", uid)
-            first = not rec or rec["mode"] != "in_person"  # an earlier online join does not count as arrival
+            seen = {}
+
+            def arrive(rec):  # optimistic lock: two scanners reading the same code cannot both record the arrival
+                seen["first"] = not rec or rec["mode"] != "in_person"  # an earlier online join does not count as arrival
+                return {"uuid": uid, "mode": "in_person", "at": ctx.now(), "by": a["uuid"]} if seen["first"] else None
+
+            rec, first = S.update("agm_attendance", uid, arrive), seen["first"]
             if first:
-                rec = {"uuid": uid, "mode": "in_person", "at": ctx.now(), "by": a["uuid"]}
-                S.put("agm_attendance", uid, rec)
                 ctx.audit.record(a["uuid"], "agm.checkin", f"user:{uid}", None, {"mode": "in_person"})
             d = s["data"]
             return {"uuid": uid, "name": f"{u['preferred_name']} {u['last_name']}".strip(),

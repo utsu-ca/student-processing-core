@@ -142,8 +142,11 @@ class ClubsModule:
             if not acct or acct["status"] != "verified":
                 raise HTTPException(422, "member must be a verified account")
             old_role = c["members"].get(uid)
-            c["members"][uid] = b.role
-            S.put("clubs", cid, c)
+            def setrole(cur):
+                cur["members"][uid] = b.role
+                return cur
+
+            c = S.update("clubs", cid, setrole)
             ctx.audit.record(a["uuid"], "club.member_set", f"club:{cid}", {"role": old_role}, {"role": b.role}, {"member": uid})
             return {"members": c["members"]}
 
@@ -157,8 +160,14 @@ class ClubsModule:
             if c["status"] != "pending":
                 raise HTTPException(409, f"club is already {c['status']}")
             conflict(c, a["uuid"])
-            c["status"] = record_decision(c, a["uuid"], b.approve, b.note, cfg.club_registration_approvals, ctx.now())
-            S.put("clubs", cid, c)
+            def vote(cur):  # re-evaluated on a fresh copy if another admin voted meanwhile, so no vote is lost
+                if cur["status"] != "pending":
+                    raise HTTPException(409, f"club is already {cur['status']}")
+                conflict(cur, a["uuid"])
+                cur["status"] = record_decision(cur, a["uuid"], b.approve, b.note, cfg.club_registration_approvals, ctx.now())
+                return cur
+
+            c = S.update("clubs", cid, vote)
             ctx.audit.record(a["uuid"], "club.decision", f"club:{cid}", {"status": "pending"}, {"status": c["status"]}, {"approve": b.approve, "note": b.note[:200]})
             return {"status": c["status"], "approvals": len(c["approvals"])}
 
@@ -217,11 +226,23 @@ class ClubsModule:
                    "approvals": [], "status": "pending" if b.kind == "expense" else "approved",
                    "required_approvals": (cfg.expense_approvals_large if gross >= cfg.expense_large_cents else cfg.expense_approvals_small)
                    if b.kind == "expense" else 0}
+            claimed = []
+
+            def attach(rc):  # a receipt can back one transaction only: the optimistic claim decides races
+                if not rc or rc["transaction_id"]:
+                    raise HTTPException(422, f"receipt {rc and rc['id']} is unknown or already used")
+                return {**rc, "transaction_id": tid}
+
+            try:
+                for rc in rcpts:
+                    S.update("receipts", rc["id"], attach)
+                    claimed.append(rc["id"])
+            except HTTPException:
+                for rid in claimed:
+                    S.update("receipts", rid, lambda r: {**r, "transaction_id": None})
+                raise
             S.put("transactions", tid, doc)
             ctx.audit.record(a["uuid"], "transaction.created", f"club:{cid}", None, doc, {"transaction": tid})
-            for rc in rcpts:
-                rc["transaction_id"] = tid
-                S.put("receipts", rc["id"], rc)
             return {k: doc[k] for k in ("id", "status", "net_cents", "tax_cents", "gross_cents", "required_approvals")}
 
         @r.get("/clubs/{cid}/transactions")
@@ -237,15 +258,18 @@ class ClubsModule:
 
         @r.post("/admin/transactions/{tid}/decision")
         def decide_tx(tid: str, b: Decision, a: dict = admin):
-            t = S.get("transactions", tid)
-            if not t or t["status"] != "pending":
-                raise HTTPException(404, "no pending transaction")
-            conflict(club(t["club_id"]), a["uuid"])
-            state = record_decision(t, a["uuid"], b.approve, b.note, t["required_approvals"], ctx.now())
-            if state == "approved" and balance(t["club_id"]) < t["gross_cents"]:
-                raise HTTPException(409, "insufficient club balance; add a grant or income first")
-            t["status"] = state
-            S.put("transactions", tid, t)
+            def vote(t):
+                if not t or t["status"] != "pending":
+                    raise HTTPException(404, "no pending transaction")
+                conflict(club(t["club_id"]), a["uuid"])
+                state = record_decision(t, a["uuid"], b.approve, b.note, t["required_approvals"], ctx.now())
+                if state == "approved" and balance(t["club_id"]) < t["gross_cents"]:
+                    raise HTTPException(409, "insufficient club balance; add a grant or income first")
+                t["status"] = state
+                return t
+
+            t = S.update("transactions", tid, vote)
+            state = t["status"]
             ctx.audit.record(a["uuid"], "transaction.decision", f"club:{t['club_id']}", {"status": "pending"}, {"status": state},
                              {"transaction": tid, "approve": b.approve, "note": b.note[:200]})
             return {"status": state, "approvals": sum(x["approve"] for x in t["approvals"]), "required": t["required_approvals"]}

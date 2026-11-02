@@ -72,6 +72,9 @@ class EncryptingStore(Store):
     def create(self, col, id, doc):
         return self.inner.create(col, id, self._in(col, doc))
 
+    def replace(self, col, id, doc, expected_rev):
+        return self.inner.replace(col, id, self._in(col, doc), expected_rev)
+
     def list(self, col, **equals):
         return [self._out(col, d) for d in self.inner.list(col, **equals)]
 

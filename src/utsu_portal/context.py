@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -12,7 +13,7 @@ from . import security
 from .events import EventBus
 from .mailer import Mailer
 from .settings import Settings
-from .store import Store
+from .store import Conflict, Store
 
 
 @dataclass
@@ -44,16 +45,29 @@ class Context:
 
     def check_otp(self, purpose: str, subject: str, code: str, consume: bool = True) -> dict | None:
         key = f"{purpose}:{subject}"
-        o = self.store.get("otps", key)
-        if not o or o["exp"] < self.now() or o["attempts"] >= self.settings.otp_attempts:
+        seen: dict = {}
+
+        def step(o):
+            """Optimistic lock: the attempt is counted (and a correct code marked used) atomically, so neither parallel
+            guesses nor a replayed correct code can get past the limits."""
+            if not o or o.get("used") or o["exp"] < self.now() or o["attempts"] >= self.settings.otp_attempts:
+                seen["ok"] = False
+                return None
+            ok = hmac.compare_digest(security.hash_otp(self.settings.secret, key, str(code)), o["hash"])
+            seen["ok"], seen["payload"] = ok, o["payload"]
+            if ok:
+                return {**o, "used": True} if consume else None
+            return {**o, "attempts": o["attempts"] + 1}
+
+        try:
+            self.store.update("otps", key, step)
+        except Conflict:
             return None
-        if security.hash_otp(self.settings.secret, key, str(code)) != o["hash"]:
-            o["attempts"] += 1
-            self.store.put("otps", key, o)
+        if not seen.get("ok"):
             return None
         if consume:
             self.store.delete("otps", key)
-        return o["payload"] or {}
+        return seen["payload"] or {}
 
     # --- auth dependencies ---------------------------------------------------
     def _account(self, authorization: str | None, token: str | None) -> dict:

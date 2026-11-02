@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from .. import security
 from ..context import Context
+from ..store import Conflict
 
 name = "sso"
 CODE_TTL, TOKEN_TTL = 60, 3600
@@ -116,8 +117,17 @@ class SSOProvider:
         if form.get("grant_type") != "authorization_code":
             raise SSOError("unsupported_grant_type")
         key = _sha(form.get("code", ""))
-        rec = self.ctx.store.get("sso_codes", key)
-        self.ctx.store.delete("sso_codes", key)  # single use, even on failure
+        def redeem(r):  # optimistic lock: of two concurrent redemptions of one code, exactly one succeeds
+            if not r or r.get("used"):
+                raise SSOError("invalid_grant")
+            return {**r, "used": True}
+
+        try:
+            rec = self.ctx.store.update("sso_codes", key, redeem)
+        except Conflict:
+            raise SSOError("invalid_grant")
+        finally:
+            self.ctx.store.delete("sso_codes", key)  # single use, even on failure
         if not rec or rec["exp"] < self.ctx.now() or rec["client"] != cid or rec["redirect_uri"] != form.get("redirect_uri"):
             raise SSOError("invalid_grant")
         if rec["challenge"]:

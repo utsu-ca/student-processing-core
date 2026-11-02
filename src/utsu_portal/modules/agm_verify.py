@@ -112,13 +112,14 @@ class AgmVerifyModule:
 
         @r.post("/admin/agm/verifications/{cid}/decision")
         def decide(cid: str, b: Decision, a: dict = admin):
-            c = S.get("agm_checks", cid)
-            if not c or c["status"] != "pending":
-                raise HTTPException(404, "no pending check")
-            if c["uuid"] == a["uuid"]:
-                raise HTTPException(403, "cannot review your own check")
-            c.update(status="approved" if b.approve else "rejected", note=b.note[:500], decided_by=a["uuid"], decided_at=ctx.now())
-            S.put("agm_checks", cid, c)
+            def claim(c):  # optimistic lock: a check can be decided once
+                if not c or c["status"] != "pending":
+                    raise HTTPException(404, "no pending check")
+                if c["uuid"] == a["uuid"]:
+                    raise HTTPException(403, "cannot review your own check")
+                return {**c, "status": "approved" if b.approve else "rejected", "note": b.note[:500], "decided_by": a["uuid"], "decided_at": ctx.now()}
+
+            c = S.update("agm_checks", cid, claim)
             S.delete("agm_media", cid)
             ctx.audit.record(a["uuid"], "agm.verification_decided", f"user:{c['uuid']}", {"status": "pending"}, {"status": c["status"]},
                              {"check": cid, "note": b.note[:200]})

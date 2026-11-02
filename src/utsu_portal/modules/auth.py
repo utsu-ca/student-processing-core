@@ -139,10 +139,13 @@ class AuthModule:
             acct = S.get("accounts", uid)
             if acct is None or ctx.check_otp("email", uid, b.code) is None:
                 raise HTTPException(400, "invalid or expired code")
-            acct["email_verified"] = True
-            if acct["status"] == "pending_email":
-                acct["status"] = "verified" if acct["role"] == "admin" else "pending_review"
-            S.put("accounts", uid, acct)
+            def mark(ac):
+                ac = {**ac, "email_verified": True}
+                if ac["status"] == "pending_email":
+                    ac["status"] = "verified" if ac["role"] == "admin" else "pending_review"
+                return ac
+
+            acct = S.update("accounts", uid, mark)
             ctx.audit.record(uid, "account.email_verified", f"user:{uid}", None, {"status": acct["status"]})
             return {"status": acct["status"]}
 
@@ -161,10 +164,13 @@ class AuthModule:
             if acct is None or ctx.check_otp("login", uid, b.code) is None:
                 raise HTTPException(400, "invalid or expired code")
             if not acct["email_verified"]:
-                acct["email_verified"] = True  # the login code proves control of the registered email
-                if acct["status"] == "pending_email":
-                    acct["status"] = "verified" if acct["role"] == "admin" else "pending_review"
-                S.put("accounts", uid, acct)
+                def mark(ac):  # the login code proves control of the registered email
+                    ac = {**ac, "email_verified": True}
+                    if ac["status"] == "pending_email":
+                        ac["status"] = "verified" if ac["role"] == "admin" else "pending_review"
+                    return ac
+
+                acct = S.update("accounts", uid, mark)
             ctx.audit.record(uid, "auth.login", f"user:{uid}")
             return {"token": ctx.identity.issue(uid), "status": acct["status"]}
 
@@ -177,8 +183,7 @@ class AuthModule:
         def update_me(b: Preferred, acct: dict = user_dep):
             u = S.get("users", acct["uuid"])
             old = u["preferred_name"]
-            u["preferred_name"] = b.preferred_name  # the only user-mutable field
-            S.put("users", acct["uuid"], u)
+            u = S.update("users", acct["uuid"], lambda cur: {**cur, "preferred_name": b.preferred_name})  # the only user-mutable field
             ctx.audit.record(acct["uuid"], "user.preferred_name_changed", f"user:{acct['uuid']}", {"preferred_name": old}, {"preferred_name": u["preferred_name"]})
             return {"user": u}
 

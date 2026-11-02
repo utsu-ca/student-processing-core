@@ -3,11 +3,19 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import random
+import secrets
 import threading
+import time
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Callable
 
 Doc = dict[str, Any]
+REV = "_rev"  # optimistic-lock revision carried by every document written through create()/replace()/update()
+
+
+class Conflict(Exception):
+    """Another writer changed the document since it was read (optimistic lock failed)."""
 
 
 class Store(ABC):
@@ -30,6 +38,33 @@ class Store(ABC):
             return False
         self.put(col, id, doc)
         return True
+
+
+    @abstractmethod
+    def replace(self, col: str, id: str, doc: Doc, expected_rev: int) -> bool:
+        """Compare-and-swap: write `doc` (with `_rev` = expected_rev + 1) only if the stored `_rev` is still
+        `expected_rev` (a missing `_rev` counts as 0). Must be atomic; returns False on conflict or if the document is gone."""
+
+    def update(self, col: str, id: str, fn: Callable[[Doc | None], Doc | None], retries: int = 10) -> Doc | None:
+        """Optimistic read-modify-write. `fn` gets the current document (None if absent) and returns the new one, or None
+        to leave it unchanged; it may raise to abort. It is re-run on a fresh read when another writer got in first, so it
+        must be free of side effects. Raises `Conflict` if the retries are exhausted."""
+        for attempt in range(retries):
+            cur = self.get(col, id)
+            new = fn(json.loads(json.dumps(cur)) if cur is not None else None)
+            if new is None:
+                return cur
+            if cur is None:
+                new = {**new, REV: 1}
+                if self.create(col, id, new):
+                    return new
+            else:
+                rev = int(cur.get(REV, 0))
+                new = {**new, REV: rev + 1}
+                if self.replace(col, id, new, rev):
+                    return new
+            time.sleep(min(0.002 * 2 ** attempt, 0.05) * random.random())
+        raise Conflict(f"{col}/{id}: too much contention")
 
 
 def _match(doc: Doc, equals: dict) -> bool:
@@ -65,6 +100,14 @@ class MemoryStore(Store):
             self.put(col, id, doc)
             return True
 
+    def replace(self, col, id, doc, expected_rev):
+        with self._lock:
+            cur = self._d.get(col, {}).get(id)
+            if cur is None or int(cur.get(REV, 0)) != expected_rev:
+                return False
+            self.put(col, id, {**doc, REV: expected_rev + 1})
+            return True
+
 
 class SQLiteStore(Store):
     def __init__(self, path: str = ":memory:") -> None:
@@ -93,6 +136,15 @@ class SQLiteStore(Store):
     def create(self, col, id, doc):
         with self._lock, self._c:
             cur = self._c.execute("INSERT OR IGNORE INTO docs VALUES (?,?,?)", (col, id, json.dumps(doc)))
+            return cur.rowcount == 1
+
+    def replace(self, col, id, doc, expected_rev):
+        with self._lock, self._c:  # the lock serialises threads; the body-equality guard protects against other processes
+            r = self._c.execute("SELECT body FROM docs WHERE col=? AND id=?", (col, id)).fetchone()
+            if not r or int(json.loads(r[0]).get(REV, 0)) != expected_rev:
+                return False
+            cur = self._c.execute("UPDATE docs SET body=? WHERE col=? AND id=? AND body=?",
+                                  (json.dumps({**doc, REV: expected_rev + 1}), col, id, r[0]))
             return cur.rowcount == 1
 
 
@@ -131,6 +183,21 @@ class FirestoreStore(Store):
         except AlreadyExists:
             return False
 
+    def replace(self, col, id, doc, expected_rev):
+        from google.cloud import firestore  # type: ignore
+
+        ref = self._db.collection(col).document(id)
+
+        @firestore.transactional
+        def txn(t) -> bool:
+            snap = ref.get(transaction=t)
+            if not snap.exists or int((snap.to_dict() or {}).get(REV, 0)) != expected_rev:
+                return False
+            t.set(ref, {**doc, REV: expected_rev + 1})
+            return True
+
+        return txn(self._db.transaction())
+
 
 class ChunkingStore(Store):
     """Wraps any store whose documents have a size cap (Firestore: 1 MiB) by sharding large top-level strings."""
@@ -141,13 +208,14 @@ class ChunkingStore(Store):
         self.inner, self.max = inner, max_value
 
     def _pack(self, col: str, id: str, doc: Doc) -> Doc:
-        out = dict(doc)
+        out, nonce = dict(doc), secrets.token_hex(4)  # unique chunk names per write: a losing writer can never clobber the winner's chunks
         for k, v in doc.items():
             if isinstance(v, str) and len(v) > self.max:
+                owner = f"{id}~{nonce}"
                 parts = [v[i:i + self.max] for i in range(0, len(v), self.max)]
                 for i, part in enumerate(parts):
-                    self.inner.put(f"{col}__chunks", f"{id}.{k}.{i}", {"d": part})
-                out[k] = f"{self.MARK}{len(parts)}:{id}"
+                    self.inner.put(f"{col}__chunks", f"{owner}.{k}.{i}", {"d": part})
+                out[k] = f"{self.MARK}{len(parts)}:{owner}"
         return out
 
     def _unpack(self, col: str, id: str, doc: Doc | None) -> Doc | None:
@@ -159,23 +227,25 @@ class ChunkingStore(Store):
                 doc[k] = "".join(self.inner.get(f"{col}__chunks", f"{owner}.{k}.{i}")["d"] for i in range(int(n)))
         return doc
 
-    def _drop(self, col: str, id: str) -> None:
-        old = self.inner.get(col, id) or {}
-        for k, v in old.items():
+    def _drop_doc(self, col: str, old: Doc | None) -> None:
+        for k, v in (old or {}).items():
             if isinstance(v, str) and v.startswith(self.MARK):
-                for i in range(int(v[len(self.MARK):].partition(":")[0])):
-                    self.inner.delete(f"{col}__chunks", f"{id}.{k}.{i}")
+                n, _, owner = v[len(self.MARK):].partition(":")
+                for i in range(int(n)):
+                    self.inner.delete(f"{col}__chunks", f"{owner}.{k}.{i}")
 
     def get(self, col, id):
         return self._unpack(col, id, self.inner.get(col, id))
 
     def put(self, col, id, doc):
-        self._drop(col, id)
+        old = self.inner.get(col, id)
         self.inner.put(col, id, self._pack(col, id, doc))
+        self._drop_doc(col, old)
 
     def delete(self, col, id):
-        self._drop(col, id)
+        old = self.inner.get(col, id)
         self.inner.delete(col, id)
+        self._drop_doc(col, old)
 
     def list(self, col, **equals):
         return [self._unpack(col, "", d) for d in self.inner.list(col, **equals)]
@@ -183,7 +253,19 @@ class ChunkingStore(Store):
     def create(self, col, id, doc):
         if self.inner.get(col, id) is not None:
             return False
-        return self.inner.create(col, id, self._pack(col, id, doc))
+        packed = self._pack(col, id, doc)
+        if self.inner.create(col, id, packed):
+            return True
+        self._drop_doc(col, packed)
+        return False
+
+    def replace(self, col, id, doc, expected_rev):
+        old, packed = self.inner.get(col, id), self._pack(col, id, doc)
+        if old is not None and self.inner.replace(col, id, packed, expected_rev):
+            self._drop_doc(col, old)
+            return True
+        self._drop_doc(col, packed)
+        return False
 
 
 class SQLStore(Store):
@@ -225,6 +307,17 @@ class SQLStore(Store):
             return True
         except self._sa.exc.IntegrityError:
             return False
+
+    def replace(self, col, id, doc, expected_rev):
+        t = self._t
+        with self._e.begin() as c:
+            raw = c.execute(self._sa.select(t.c.body).where(t.c.col == col, t.c.id == id)).scalar()
+            if raw is None or int(json.loads(raw).get(REV, 0)) != expected_rev:
+                return False
+            # the WHERE on the exact body we read makes this a compare-and-swap on every SQL dialect, with no extra column
+            n = c.execute(t.update().where(t.c.col == col, t.c.id == id, t.c.body == raw)
+                          .values(body=json.dumps({**doc, REV: expected_rev + 1}))).rowcount
+            return n == 1
 
     def delete(self, col, id):
         t = self._t

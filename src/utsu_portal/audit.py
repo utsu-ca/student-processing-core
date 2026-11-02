@@ -139,7 +139,7 @@ class AuditLog:
             d["hash"] = self._mac(prev, d)
             if S.create("audit", d["id"], d):
                 break
-        S.put("audit_head", "head", {"id": "head", "seq": seq})
+        S.update("audit_head", "head", lambda h: {"id": "head", "seq": max(seq, (h or {}).get("seq", 0))})  # only ever moves forward
         return d
 
     def entries(self) -> list[dict]:
