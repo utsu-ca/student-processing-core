@@ -26,7 +26,7 @@ generated once into Secret Manager and mounted as env vars. **Never rotate `PORT
 `GET /healthz` is the liveness probe. The container listens on `$PORT`.
 
 ## Database portability
-Everything goes through the five-method `Store` interface (`get/put/delete/list/create`; `create` must be atomic). Built in:
+Everything goes through the six-method `Store` interface (`get/put/delete/list/create/replace`; `create` and `replace` must be atomic). Built in:
 - **Firestore** (wrapped in `ChunkingStore`, which shards values over Firestore's 1 MiB document limit, e.g. receipts and scans).
 - **SQL** via SQLAlchemy: a single `portal_docs(col, id, body)` table created automatically, so there are no migrations.
   - Supabase / any PostgreSQL: `PORTAL_STORE=sql:postgresql+psycopg://USER:PASS@HOST:5432/DB` (psycopg is in the image).
@@ -95,3 +95,15 @@ literal Secrets in production.
   `/{id}/diff` (two-column, word-level, Wikipedia-style revision diff plus a unified diff), `/compare?a=&b=` (diff any two
   entries, e.g. two form revisions), `/verify` (detects edited, removed or reordered entries), `/export` (gzip NDJSON).
   A tamper-evident chain cannot stop someone with both the database and `PORTAL_SECRET`; ship exports to write-once storage.
+
+## Optimistic locking
+Concurrent writers (several replicas, two admins, two check-in scanners) are handled with optimistic concurrency, not
+locks. Documents written through `create`/`update` carry a `_rev` counter. `Store.replace(col, id, doc, expected_rev)` is an
+atomic compare-and-swap (SQL: update guarded on the exact body read, so it works on every dialect with no extra column and no
+migration; Firestore: a transaction; memory/SQLite: lock + guard), and `Store.update(col, id, fn)` is the read-modify-write
+loop: `fn` is re-run on a fresh read if someone else won (bounded retries with jitter, then `Conflict`), so it must be
+side-effect free and may raise `HTTPException` to abort. A new backend only has to implement `replace`.
+Used for: one-shot decisions (verification, AGM check, club and expense approvals each count every vote and decide once;
+receipts back one transaction), form drafts (on top of the editor's `base_rev` check, so a stale save gets 409),
+publish/unpublish, submission edits vs. admin decisions, OTP attempt counting and single redemption, SSO authorization codes
+(single redemption), account activation, and check-in. Blind `put` is kept only where the last writer may legitimately win.
