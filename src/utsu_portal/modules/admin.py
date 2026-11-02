@@ -41,6 +41,8 @@ class AdminModule:
             if v["uuid"] == a["uuid"]:
                 raise HTTPException(403, "cannot review your own request")
             acct, user = S.get("accounts", v["uuid"]), S.get("users", v["uuid"])
+            snap = lambda: {"status": acct["status"], **{k: user.get(k) for k in ("email", "first_name", "last_name")}}
+            before = snap()
             if b.approve:
                 ch = v["changes"]
                 if "email" in ch:
@@ -57,6 +59,8 @@ class AdminModule:
             S.put("accounts", v["uuid"], acct)
             v.update(status="approved" if b.approve else "rejected", note=b.note[:500], decided_by=a["uuid"], decided_at=ctx.now())
             S.put("verifications", vid, v)
+            ctx.audit.record(a["uuid"], "verification.decided", f"user:{v['uuid']}", before, snap(),
+                             {"verification": vid, "kind": v["kind"], "approved": b.approve, "note": b.note[:200]})
             S.delete("media", vid)  # face / id images are never retained after the decision
             return {"status": v["status"]}
 

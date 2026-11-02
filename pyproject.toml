@@ -12,8 +12,8 @@ requires-python = ">=3.12"
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest", "httpx"]
-portal = ["fastapi>=0.110", "uvicorn", "pyyaml", "cryptography>=50", "segno>=1.6.6"]
+dev = ["pytest", "httpx", "fakeredis"]
+portal = ["fastapi>=0.110", "uvicorn", "pyyaml", "cryptography>=50", "segno>=1.6.6", "redis>=5"]
 firestore = ["google-cloud-firestore"]
 sql = ["sqlalchemy>=2"]  # + a driver: psycopg (PostgreSQL/Supabase), pyodbc (Azure SQL), pymysql
 

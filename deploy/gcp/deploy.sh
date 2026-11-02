@@ -97,7 +97,8 @@ echo "--> Deploying Cloud Run service (a few minutes)..."
 ENV_VARS="^|^PORTAL_STORE=firestore|PORTAL_ADMINS=$PORTAL_ADMINS|PORTAL_BASE_URL=https://$DOMAIN_NAME|PORTAL_MAIL_FROM=$MAIL_FROM"
 ENV_VARS="$ENV_VARS|PORTAL_ZOOM_URL=$ZOOM_URL|PORTAL_ZOOM_SSO_URL=$ZOOM_SSO_URL"
 [ -n "$ZOOM_REDIRECT_URIS" ] && ENV_VARS="$ENV_VARS|PORTAL_ZOOM_REDIRECT_URIS=$ZOOM_REDIRECT_URIS"
-# max-instances=1: realtime admin sync uses an in-process event bus (see wiki/Deployment.md to scale out).
+# max-instances=1 by default: without PORTAL_REDIS_URL (e.g. Memorystore) the realtime bus and rate limits are per-instance.
+# Set PORTAL_REDIS_URL via Secret Manager, then raise MAX_INSTANCES (see wiki/Deployment.md).
 gcloud run deploy "$SERVICE_NAME" --source . --region="$REGION" \
     --ingress=internal-and-cloud-load-balancing --allow-unauthenticated \
     --service-account="$SA_EMAIL" --min-instances=0 --max-instances="${MAX_INSTANCES:-1}" \

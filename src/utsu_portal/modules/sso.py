@@ -124,7 +124,7 @@ class SSOProvider:
             v = _b64(hashlib.sha256(form.get("code_verifier", "").encode()).digest())
             if not hmac.compare_digest(v, rec["challenge"]):
                 raise SSOError("invalid_grant", "PKCE verification failed")
-        user, acct = self.ctx.store.get("users", rec["uuid"]), self.ctx.store.get("accounts", rec["uuid"])
+        user, acct = self.ctx.identity.user(rec["uuid"]), self.ctx.identity.account(rec["uuid"])
         if not user or not acct or acct["status"] != "verified" or c.eligibility(acct, user):
             raise SSOError("invalid_grant", "no longer eligible")  # re-checked: access may have been revoked since authorize
         now = self.ctx.now()
@@ -136,7 +136,7 @@ class SSOProvider:
 
     def userinfo(self, access_token: str) -> dict:
         t = self.ctx.store.get("sso_tokens", _sha(access_token))
-        user = t and t["exp"] > self.ctx.now() and self.ctx.store.get("users", t["uuid"])
+        user = t and t["exp"] > self.ctx.now() and self.ctx.identity.user(t["uuid"])
         if not user:
             raise HTTPException(401, "invalid token")
         return self.claims(t["client"], user)
@@ -179,7 +179,7 @@ class SSOModule:
 
         @r.post("/api/sso/authorize")
         def authorize(b: AuthorizeIn, a: dict = verified):
-            url = provider.authorize(a, ctx.store.get("users", a["uuid"]), b.client_id, b.redirect_uri, b.state, b.nonce,
+            url = provider.authorize(a, ctx.identity.user(a["uuid"]), b.client_id, b.redirect_uri, b.state, b.nonce,
                                      b.code_challenge, b.code_challenge_method)
             return {"redirect": url}
 

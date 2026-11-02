@@ -130,6 +130,7 @@ class AuthModule:
             S.put("accounts", uid, {"uuid": uid, "status": "pending_email", "role": "admin" if admin else "applicant",
                                     "email_verified": False, "sid_uuid": sid, "email_key": ekey})
             ctx.send_otp("email", uid, b.email)
+            ctx.audit.record(uid, "account.registered", f"user:{uid}", None, S.get("users", uid), {"role": "admin" if admin else "applicant"})
             return {"uuid": uid, "status": "pending_email"}
 
         @r.post("/auth/verify-email")
@@ -142,6 +143,7 @@ class AuthModule:
             if acct["status"] == "pending_email":
                 acct["status"] = "verified" if acct["role"] == "admin" else "pending_review"
             S.put("accounts", uid, acct)
+            ctx.audit.record(uid, "account.email_verified", f"user:{uid}", None, {"status": acct["status"]})
             return {"status": acct["status"]}
 
         @r.post("/auth/login")
@@ -163,7 +165,8 @@ class AuthModule:
                 if acct["status"] == "pending_email":
                     acct["status"] = "verified" if acct["role"] == "admin" else "pending_review"
                 S.put("accounts", uid, acct)
-            return {"token": security.sign_token(ctx.settings.secret, uid, ctx.settings.token_ttl), "status": acct["status"]}
+            ctx.audit.record(uid, "auth.login", f"user:{uid}")
+            return {"token": ctx.identity.issue(uid), "status": acct["status"]}
 
         @r.get("/me")
         def me(acct: dict = user_dep):
@@ -173,8 +176,10 @@ class AuthModule:
         @r.patch("/me")
         def update_me(b: Preferred, acct: dict = user_dep):
             u = S.get("users", acct["uuid"])
+            old = u["preferred_name"]
             u["preferred_name"] = b.preferred_name  # the only user-mutable field
             S.put("users", acct["uuid"], u)
+            ctx.audit.record(acct["uuid"], "user.preferred_name_changed", f"user:{acct['uuid']}", {"preferred_name": old}, {"preferred_name": u["preferred_name"]})
             return {"user": u}
 
         @r.get("/verification/challenge")

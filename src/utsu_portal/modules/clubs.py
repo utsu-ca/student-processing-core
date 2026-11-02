@@ -117,6 +117,7 @@ class ClubsModule:
             cid = secrets.token_hex(8)
             S.put("clubs", cid, {"id": cid, "name": b.name, "description": b.description, "category": b.category, "status": "pending",
                                  "members": {a["uuid"]: "owner"}, "approvals": [], "created_at": ctx.now()})
+            ctx.audit.record(a["uuid"], "club.registered", f"club:{cid}", None, S.get("clubs", cid))
             return {"id": cid, "status": "pending"}
 
         @r.get("/clubs/mine")
@@ -136,12 +137,14 @@ class ClubsModule:
             member(c, a["uuid"], ("owner",))
             if b.role not in ROLES[1:]:
                 raise HTTPException(422, f"role must be one of {ROLES[1:]}")
-            uid = ctx.uid(b.username)
-            acct = S.get("accounts", uid)
+            found = ctx.identity.resolve(b.username)
+            uid, acct = (found["uuid"], found["account"]) if found else (None, None)
             if not acct or acct["status"] != "verified":
                 raise HTTPException(422, "member must be a verified account")
+            old_role = c["members"].get(uid)
             c["members"][uid] = b.role
             S.put("clubs", cid, c)
+            ctx.audit.record(a["uuid"], "club.member_set", f"club:{cid}", {"role": old_role}, {"role": b.role}, {"member": uid})
             return {"members": c["members"]}
 
         @r.get("/admin/clubs")
@@ -156,6 +159,7 @@ class ClubsModule:
             conflict(c, a["uuid"])
             c["status"] = record_decision(c, a["uuid"], b.approve, b.note, cfg.club_registration_approvals, ctx.now())
             S.put("clubs", cid, c)
+            ctx.audit.record(a["uuid"], "club.decision", f"club:{cid}", {"status": "pending"}, {"status": c["status"]}, {"approve": b.approve, "note": b.note[:200]})
             return {"status": c["status"], "approvals": len(c["approvals"])}
 
         # ---------------- receipts ----------------
@@ -175,6 +179,7 @@ class ClubsModule:
             rid = secrets.token_hex(8)
             S.put("receipts", rid, {"id": rid, "club_id": cid, "sha256": digest, "data_url": b.data_url, "by": a["uuid"],
                                     "at": ctx.now(), "transaction_id": None})
+            ctx.audit.record(a["uuid"], "receipt.uploaded", f"club:{cid}", None, None, {"receipt": rid, "sha256": digest})
             return {"id": rid, "sha256": digest}
 
         @r.get("/clubs/{cid}/receipts/{rid}")
@@ -213,6 +218,7 @@ class ClubsModule:
                    "required_approvals": (cfg.expense_approvals_large if gross >= cfg.expense_large_cents else cfg.expense_approvals_small)
                    if b.kind == "expense" else 0}
             S.put("transactions", tid, doc)
+            ctx.audit.record(a["uuid"], "transaction.created", f"club:{cid}", None, doc, {"transaction": tid})
             for rc in rcpts:
                 rc["transaction_id"] = tid
                 S.put("receipts", rc["id"], rc)
@@ -240,6 +246,8 @@ class ClubsModule:
                 raise HTTPException(409, "insufficient club balance; add a grant or income first")
             t["status"] = state
             S.put("transactions", tid, t)
+            ctx.audit.record(a["uuid"], "transaction.decision", f"club:{t['club_id']}", {"status": "pending"}, {"status": state},
+                             {"transaction": tid, "approve": b.approve, "note": b.note[:200]})
             return {"status": state, "approvals": sum(x["approve"] for x in t["approvals"]), "required": t["required_approvals"]}
 
         @r.post("/admin/clubs/{cid}/grants", status_code=201)
@@ -253,6 +261,7 @@ class ClubsModule:
                                         "gross_cents": b.amount_cents, "tax_bps": 0, "category": "grant", "description": clean_text(b.note, 500) or "Grant",
                                         "date": "", "receipt_ids": [], "created_by": a["uuid"], "created_at": ctx.now(),
                                         "approvals": [], "status": "approved", "required_approvals": 0})
+            ctx.audit.record(a["uuid"], "grant.issued", f"club:{cid}", None, {"amount_cents": b.amount_cents}, {"transaction": tid})
             return {"id": tid}
 
         @r.get("/clubs/{cid}/summary")

@@ -73,13 +73,14 @@ class AgmModule:
                 raise HTTPException(503, "Zoom link not configured")
             if not S.get("agm_attendance", a["uuid"]):
                 S.put("agm_attendance", a["uuid"], {"uuid": a["uuid"], "mode": "online", "at": ctx.now(), "by": a["uuid"]})
+                ctx.audit.record(a["uuid"], "agm.online_join", f"user:{a['uuid']}", None, {"mode": "online"})
             return {"zoom_url": cfg.zoom_url, "sso_url": cfg.zoom_sso_url}
 
         @r.post("/admin/agm/checkin")
         def checkin(b: CheckinIn, a: dict = admin):
             uid = b.uuid.strip().lower()
-            u = UUID.match(uid) and S.get("users", uid)
-            acct = u and S.get("accounts", uid)
+            u = UUID.match(uid) and ctx.identity.user(uid)
+            acct = u and ctx.identity.account(uid)
             s = u and rsvp(ctx, uid)
             if not u or not acct or acct["status"] != "verified":
                 raise HTTPException(404, "unknown or unverified attendee")
@@ -90,6 +91,7 @@ class AgmModule:
             if first:
                 rec = {"uuid": uid, "mode": "in_person", "at": ctx.now(), "by": a["uuid"]}
                 S.put("agm_attendance", uid, rec)
+                ctx.audit.record(a["uuid"], "agm.checkin", f"user:{uid}", None, {"mode": "in_person"})
             d = s["data"]
             return {"uuid": uid, "name": f"{u['preferred_name']} {u['last_name']}".strip(),
                     "legal_name": f"{u['first_name']} {u['last_name']}", "pronouns": d.get("pronouns", ""),

@@ -1,0 +1,25 @@
+# The auth service is exposed only on the user-facing identity routes. /internal/* is NOT routed from outside.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: portal
+  namespace: utsu-portal
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"      # server-sent events for realtime form sync
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls: [{hosts: [portal.example.org], secretName: portal-tls}]
+  rules:
+    - host: portal.example.org
+      http:
+        paths:
+          - {path: /api/auth, pathType: Prefix, backend: {service: {name: auth, port: {number: 8080}}}}
+          - {path: /api/me, pathType: Exact, backend: {service: {name: auth, port: {number: 8080}}}}
+          - {path: /api/verification, pathType: Prefix, backend: {service: {name: auth, port: {number: 8080}}}}
+          - {path: /api/recovery, pathType: Prefix, backend: {service: {name: auth, port: {number: 8080}}}}
+          - {path: /api/admin/verifications, pathType: Prefix, backend: {service: {name: auth, port: {number: 8080}}}}
+          - {path: /api/admin/auth-audit, pathType: Prefix, backend: {service: {name: auth, port: {number: 8080}}}}
+          - {path: /, pathType: Prefix, backend: {service: {name: portal, port: {number: 8080}}}}

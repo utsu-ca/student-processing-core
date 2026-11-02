@@ -1,0 +1,53 @@
+# Default deny, then allow only what each tier needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: default-deny, namespace: utsu-portal}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: portal, namespace: utsu-portal}
+spec:
+  podSelector: {matchLabels: {app: portal}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}}]
+      ports: [{port: 8080}]
+  egress:
+    - to: [{podSelector: {matchLabels: {app: auth}}}]      # internal identity API
+      ports: [{port: 8080}]
+    - to: [{podSelector: {matchLabels: {app: redis}}}]
+      ports: [{port: 6379}]
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}}]   # DNS
+      ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+    - ports: [{port: 443}, {port: 5432}, {port: 465}]       # database / SMTP / managed services; narrow to CIDRs in production
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: auth, namespace: utsu-portal}
+spec:
+  podSelector: {matchLabels: {app: auth}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: ingress-nginx}}, podSelector: {}}]   # public auth routes only (see ingress.yaml; /internal is never routed)
+      ports: [{port: 8080}]
+    - from: [{podSelector: {matchLabels: {app: portal}}}]
+      ports: [{port: 8080}]
+  egress:
+    - to: [{podSelector: {matchLabels: {app: redis}}}]
+      ports: [{port: 6379}]
+    - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}}]
+      ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+    - ports: [{port: 5432}, {port: 465}, {port: 443}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: redis, namespace: utsu-portal}
+spec:
+  podSelector: {matchLabels: {app: redis}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{podSelector: {matchLabels: {app: portal}}}, {podSelector: {matchLabels: {app: auth}}}]
+      ports: [{port: 6379}]

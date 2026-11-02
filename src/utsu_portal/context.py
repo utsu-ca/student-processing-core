@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 from fastapi import Depends, Header, HTTPException, Query
 
@@ -21,6 +21,9 @@ class Context:
     settings: Settings
     mailer: Mailer
     bus: EventBus = field(default_factory=EventBus)
+    identity: Any = None  # Identity (local store or remote auth service)
+    audit: Any = None  # AuditLog, set by create_app
+    limiter: Any = None
     services: dict = field(default_factory=dict)  # shared objects between modules (e.g. the SSO provider)
     # --- helpers -----------------------------------------------------------
     def now(self) -> int:
@@ -55,9 +58,8 @@ class Context:
     # --- auth dependencies ---------------------------------------------------
     def _account(self, authorization: str | None, token: str | None) -> dict:
         raw = token or (authorization or "").removeprefix("Bearer ").strip()
-        sub = security.read_token(self.settings.secret, raw) if raw else None
-        acct = self.store.get("accounts", sub) if sub else None
-        if not acct or not acct.get("email_verified"):
+        acct = self.identity.authenticate(raw) if raw else None
+        if not acct:
             raise HTTPException(401, "not authenticated")
         return acct
 

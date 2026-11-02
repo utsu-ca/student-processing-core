@@ -1,0 +1,34 @@
+# Shared realtime bus + rate-limit counters. Nothing durable is kept here, so no volume. Prefer a managed Redis
+# (Memorystore / Azure Cache / ElastiCache) with TLS + AUTH in production and point PORTAL_REDIS_URL at it.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: redis, namespace: utsu-portal}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: redis}}
+  template:
+    metadata: {labels: {app: redis}}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 999, runAsGroup: 999, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          command: ["sh", "-c", 'exec redis-server --save "" --appendonly no --requirepass "$(cat /run/redis/password)"']
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+          ports: [{containerPort: 6379}]
+          resources: {requests: {cpu: 50m, memory: 64Mi}, limits: {memory: 128Mi}}
+          volumeMounts:
+            - {name: pw, mountPath: /run/redis, readOnly: true}
+            - {name: data, mountPath: /data}
+      volumes:
+        - name: pw
+          secret: {secretName: redis-auth}     # key: password ; use the same value in the redis-url secrets
+        - {name: data, emptyDir: {sizeLimit: 16Mi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: redis, namespace: utsu-portal}
+spec:
+  selector: {app: redis}
+  ports: [{port: 6379}]

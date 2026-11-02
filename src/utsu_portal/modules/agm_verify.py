@@ -99,7 +99,7 @@ class AgmVerifyModule:
         def pending(_: dict = admin):
             out = []
             for c in S.list("agm_checks", status="pending"):
-                u = S.get("users", c["uuid"]) or {}
+                u = ctx.identity.user(c["uuid"]) or {}
                 out.append({**c, "first_name": u.get("first_name"), "last_name": u.get("last_name"), "student_number": u.get("student_number")})
             return out
 
@@ -120,6 +120,8 @@ class AgmVerifyModule:
             c.update(status="approved" if b.approve else "rejected", note=b.note[:500], decided_by=a["uuid"], decided_at=ctx.now())
             S.put("agm_checks", cid, c)
             S.delete("agm_media", cid)
+            ctx.audit.record(a["uuid"], "agm.verification_decided", f"user:{c['uuid']}", {"status": "pending"}, {"status": c["status"]},
+                             {"check": cid, "note": b.note[:200]})
             if b.approve:
                 grant(c["uuid"])
             return {"status": c["status"]}

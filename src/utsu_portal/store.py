@@ -240,14 +240,14 @@ class SQLStore(Store):
 
 def open_store(spec: str) -> Store:
     """`memory` | `sqlite:<path>` | `sql:<sqlalchemy url>` (or `sql` + DATABASE_URL) | `firestore` | `pkg.module:factory`."""
-    import os
+    from .settings import env_secret
 
     if spec == "memory":
         return MemoryStore()
     if spec.startswith("sqlite:"):
         return SQLiteStore(spec[7:] or ":memory:")
     if spec == "sql" or spec.startswith("sql:"):
-        url = spec[4:] or os.environ.get("DATABASE_URL", "")
+        url = spec[4:] or env_secret("DATABASE_URL", "")
         if not url:
             raise ValueError("sql store needs a SQLAlchemy URL (sql:<url> or DATABASE_URL)")
         return SQLStore(url)

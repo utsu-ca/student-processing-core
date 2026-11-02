@@ -1,0 +1,15 @@
+# Non-secret settings. Secrets live in secret.example.yaml (replace with External Secrets / Secret Manager CSI in production).
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: portal-config, namespace: utsu-portal}
+data:
+  PORTAL_STORE: "sql"            # or firestore | sql:<url> | pkg.module:factory ; DATABASE_URL comes from the secret
+  PORTAL_BASE_URL: "https://portal.example.org"
+  PORTAL_ADMINS: "replace-me"
+  PORTAL_AUTH_URL: "http://auth.utsu-portal.svc:8080"   # cluster-internal; remove for a single-deployment portal
+  PORTAL_REDIS_URL_FILE: "/run/secrets/portal/redis-url"
+  PORTAL_SECRET_FILE: "/run/secrets/portal/secret"
+  PORTAL_DATA_KEY_FILE: "/run/secrets/portal/data-key"
+  PORTAL_SERVICE_TOKEN_FILE: "/run/secrets/portal/service-token"
+  PORTAL_AUTH_PUBLIC_KEY_FILE: "/run/secrets/portal/auth-public-key"
+  PORTAL_TOKEN_TTL: "900"

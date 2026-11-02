@@ -52,5 +52,7 @@ class SMTPMailer(Mailer):
 def mailer_from_env() -> Mailer:
     import os
 
-    url = os.environ.get("PORTAL_SMTP_URL")
+    from .settings import env_secret
+
+    url = env_secret("PORTAL_SMTP_URL")
     return SMTPMailer(url, os.environ.get("PORTAL_MAIL_FROM", "no-reply@localhost")) if url else Mailer()

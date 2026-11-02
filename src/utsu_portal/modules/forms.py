@@ -86,6 +86,7 @@ class FormsModule:
             hist = (prev or {}).get("history", []) + [{"at": ctx.now(), "status": "submitted", "note": ""}]
             S.put("submissions", key, {"id": key, "form_id": fid, "uuid": acct["uuid"], "version": v["version"], "hash": v["hash"],
                                        "data": data, "status": "submitted", "updated_at": ctx.now(), "history": hist})
+            ctx.audit.record(acct["uuid"], "submission.saved", f"form:{fid}", (prev or {}).get("data"), data, {"version": v["version"], "revision": len(hist)})
             return {"status": "submitted"}
 
         @r.get("/me/submissions")
@@ -135,8 +136,10 @@ class FormsModule:
             existing = S.get("form_versions", f"{fid}@{schema['version']}")
             if existing and existing["hash"] != h:
                 raise HTTPException(409, f"version {schema['version']} is already published with a different definition; bump the version")
+            old = f.get("draft_yaml")
             f.update(rev=f["rev"] + 1, draft_yaml=formdef.to_yaml(schema), draft_hash=h, draft_version=schema["version"], updated_by=a["uuid"])
             S.put("forms", fid, f)
+            ctx.audit.record(a["uuid"], "form.draft_saved", f"form:{fid}", {"yaml": old}, {"yaml": f["draft_yaml"]}, {"rev": f["rev"], "version": schema["version"]})
             ctx.bus.publish(f"form:{fid}", {"rev": f["rev"], "yaml": f["draft_yaml"], "by": a["uuid"]})
             return {"rev": f["rev"], "hash": h, "version": schema["version"]}
 
@@ -155,34 +158,30 @@ class FormsModule:
             if not ex:
                 S.put("form_versions", key, {"id": fid, "version": schema["version"], "hash": h, "schema": schema,
                                              "yaml": f["draft_yaml"], "published_at": ctx.now(), "by": a["uuid"]})
+            prev_pub = f.get("published_version")
             f["published_version"] = schema["version"]
             S.put("forms", fid, f)
+            ctx.audit.record(a["uuid"], "form.published", f"form:{fid}", {"published_version": prev_pub},
+                             {"published_version": f["published_version"], "yaml": f["draft_yaml"]}, {"hash": h})
             ctx.bus.publish(f"form:{fid}", {"rev": f["rev"], "published_version": f["published_version"]})
             return {"published_version": f["published_version"], "hash": h}
 
         @r.post("/admin/forms/{fid}/unpublish")
-        def unpublish(fid: str, _: dict = admin):
+        def unpublish(fid: str, a: dict = admin):
             f = _ensure(fid)
+            prev_pub = f.get("published_version")
             f["published_version"] = None
             S.put("forms", fid, f)
+            ctx.audit.record(a["uuid"], "form.unpublished", f"form:{fid}", {"published_version": prev_pub}, {"published_version": None})
             ctx.bus.publish(f"form:{fid}", {"rev": f["rev"], "published_version": None})
             return {"published_version": None}
 
         @r.get("/admin/forms/{fid}/events")
         async def events(fid: str, request: Request, _: dict = admin_q):
-            q = ctx.bus.subscribe(f"form:{fid}")
-
             async def gen():
-                try:
-                    yield ": connected\n\n"
-                    while not await request.is_disconnected():
-                        try:
-                            ev = await asyncio.wait_for(q.get(), 15)
-                            yield f"data: {json.dumps(ev)}\n\n"
-                        except asyncio.TimeoutError:
-                            yield ": keepalive\n\n"
-                finally:
-                    ctx.bus.unsubscribe(f"form:{fid}", q)
+                yield ": connected\n\n"
+                async for ev in ctx.bus.listen(f"form:{fid}", request.is_disconnected):
+                    yield ": keepalive\n\n" if ev is None else f"data: {json.dumps(ev)}\n\n"
 
             return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-store"})
 
@@ -191,21 +190,23 @@ class FormsModule:
         def admin_submissions(fid: str, _: dict = admin):
             out = []
             for s in S.list("submissions", form_id=fid):
-                u = S.get("users", s["uuid"]) or {}
+                u = ctx.identity.user(s["uuid"]) or {}
                 out.append({**s, "applicant": {k: u.get(k) for k in ("preferred_name", "first_name", "last_name", "email", "student_number")}})
             return out
 
         @r.post("/admin/submissions/{fid}/{uid}/status")
-        def set_status(fid: str, uid: str, b: StatusIn, _: dict = admin):
+        def set_status(fid: str, uid: str, b: StatusIn, a: dict = admin):
             s = S.get("submissions", f"{fid}:{uid}")
             if not s:
                 raise HTTPException(404, "no such submission")
             if b.status not in STATUSES:
                 raise HTTPException(422, f"status must be one of {STATUSES}")
+            old_status = s["status"]
             s["status"] = b.status
             s["updated_at"] = ctx.now()
             s["history"].append({"at": ctx.now(), "status": b.status, "note": b.note[:500]})
             S.put("submissions", f"{fid}:{uid}", s)
+            ctx.audit.record(a["uuid"], "submission.status", f"form:{fid}", {"status": old_status}, {"status": b.status}, {"applicant": uid, "note": b.note[:200]})
             return {"status": b.status}
 
         return r
