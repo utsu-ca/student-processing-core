@@ -5,7 +5,7 @@ metadata: {name: portal-config, namespace: utsu-portal}
 data:
   PORTAL_STORE: "sql"            # or firestore | sql:<url> | pkg.module:factory ; DATABASE_URL comes from the secret
   PORTAL_BASE_URL: "https://portal.example.org"
-  PORTAL_ADMINS: "replace-me"
+  PORTAL_ADMIN_EMAILS: "replace-me@example.com"
   PORTAL_AUTH_URL: "http://auth.utsu-portal.svc:8080"   # cluster-internal; remove for a single-deployment portal
   PORTAL_REDIS_URL_FILE: "/run/secrets/portal/redis-url"
   PORTAL_SECRET_FILE: "/run/secrets/portal/secret"

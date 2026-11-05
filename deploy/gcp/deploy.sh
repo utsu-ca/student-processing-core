@@ -2,7 +2,7 @@
 # One-shot, re-runnable deploy to Cloud Run + Firestore, modelled on utsu-ca/agm-gcp-runbook.
 # Run from Google Cloud Shell in a billing-enabled project:  ./deploy/gcp/deploy.sh
 # Preset any answer via env var to skip its prompt:
-#   DOMAIN_NAME, PORTAL_ADMINS, ZOOM_URL, ZOOM_SSO_URL, ZOOM_REDIRECT_URIS, SMTP_URL, MAIL_FROM, ADMIN_IPS
+#   DOMAIN_NAME, PORTAL_ADMIN_EMAILS, ZOOM_URL, ZOOM_SSO_URL, ZOOM_REDIRECT_URIS, SMTP_URL, MAIL_FROM, ADMIN_IPS
 # GCP-specific pieces live ONLY in this script. The app itself just reads PORTAL_* env vars, so to move to another
 # platform/database keep the image and change PORTAL_STORE (e.g. sql:postgresql+psycopg://...); see wiki/Deployment.md.
 set -euo pipefail
@@ -41,7 +41,7 @@ echo "Deploying to project: $PROJECT_ID in $REGION"
 
 HOST_RE='^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$'
 ask DOMAIN_NAME "Website address people will visit (e.g. portal.example.com)" "$HOST_RE" "enter a hostname like portal.example.com"
-ask PORTAL_ADMINS "Bootstrap admin usernames, comma-separated" '^[A-Za-z0-9._,-]+$' "letters, digits . _ - and commas" 
+ask PORTAL_ADMIN_EMAILS "Bootstrap admin email addresses, comma-separated" '^[^@ ,]+@[^@ ,]+(,[^@ ,]+@[^@ ,]+)*$' "comma-separated email addresses" 
 SMTP_URL="${SMTP_URL-}"
 if [ -z "$SMTP_URL" ]; then
     read -r -p "SMTP URL for OTP email, e.g. smtps://USER:PASS@HOST:465 (blank = log only, NOT for production)" SMTP_URL
@@ -94,7 +94,7 @@ if [ -n "$ZOOM_URL" ]; then
 fi
 
 echo "--> Deploying Cloud Run service (a few minutes)..."
-ENV_VARS="^|^PORTAL_STORE=firestore|PORTAL_ADMINS=$PORTAL_ADMINS|PORTAL_BASE_URL=https://$DOMAIN_NAME|PORTAL_MAIL_FROM=$MAIL_FROM"
+ENV_VARS="^|^PORTAL_STORE=firestore|PORTAL_ADMIN_EMAILS=$PORTAL_ADMIN_EMAILS|PORTAL_BASE_URL=https://$DOMAIN_NAME|PORTAL_MAIL_FROM=$MAIL_FROM"
 ENV_VARS="$ENV_VARS|PORTAL_ZOOM_URL=$ZOOM_URL|PORTAL_ZOOM_SSO_URL=$ZOOM_SSO_URL"
 [ -n "$ZOOM_REDIRECT_URIS" ] && ENV_VARS="$ENV_VARS|PORTAL_ZOOM_REDIRECT_URIS=$ZOOM_REDIRECT_URIS"
 # max-instances=1 by default: without PORTAL_REDIS_URL (e.g. Memorystore) the realtime bus and rate limits are per-instance.
@@ -163,7 +163,7 @@ DEPLOYED!   https://$DOMAIN_NAME   (static IP: $IP_ADDRESS)
 ======================================================
 NEXT STEPS:
 1. Create a DNS A record: $DOMAIN_NAME -> $IP_ADDRESS (the managed certificate is issued once DNS propagates).
-2. Register with PORTAL_ADMINS, sign in (the OTP is emailed), and publish/edit forms from the admin screens.
+2. Register with PORTAL_ADMIN_EMAILS, sign in (the OTP is emailed), and publish/edit forms from the admin screens.
 3. Zoom SSO (if used): issuer https://$DOMAIN_NAME ; discovery https://$DOMAIN_NAME/sso/.well-known/openid-configuration ;
    client id "zoom"; read the secret with:  gcloud secrets versions access latest --secret=portal-zoom-client-secret
 MSG

@@ -18,7 +18,7 @@ generated once into Secret Manager and mounted as env vars. **Never rotate `PORT
 |---|---|
 | `PORTAL_SECRET` (required) | stable pepper for username/student-id hashes and tokens |
 | `PORTAL_STORE` | `memory`, `sqlite:<path>`, `sql:<url>` (or `sql` + `DATABASE_URL`), `firestore`, or `pkg.module:factory` |
-| `PORTAL_ADMINS` | bootstrap admin usernames |
+| `PORTAL_ADMIN_EMAILS` | emails that become admin once verified by OTP |
 | `PORTAL_BASE_URL`, `PORTAL_SSO_KEY` | SSO issuer URL and RSA private key (PEM) |
 | `PORTAL_SMTP_URL`, `PORTAL_MAIL_FROM` | OTP email over any SMTP service; without it codes are only logged |
 | `PORTAL_ZOOM_*`, `PORTAL_AGM_VERIFY_MODE` | see the AGM section of [Applicant portal](Applicant-Portal.md) |

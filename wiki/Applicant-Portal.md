@@ -3,7 +3,7 @@
 FastAPI, database-agnostic form application. Install with `pip install -e ".[portal]"` and run:
 
 ```
-PORTAL_SECRET=<long random, stable> PORTAL_ADMINS=alice uvicorn --factory utsu_portal:create_app
+PORTAL_SECRET=<long random, stable> PORTAL_ADMIN_EMAILS=alice@example.com uvicorn --factory utsu_portal:create_app
 ```
 
 `PORTAL_STORE` selects the backend: `memory` (default), `sqlite:<path>` or `firestore` (`.[firestore]`). Add a backend by
@@ -17,7 +17,7 @@ hashes, so it must stay stable.
 - Passwordless: username, then an emailed 6-digit OTP (hashed, expiring, attempt-limited) gives a signed bearer token.
 - Activation: email OTP, then a live face + ID capture (browser camera, server-issued challenge phrase), current
   division codes and legal names, then **manual admin approval**. Only `verified` accounts can submit forms. Images are
-  deleted as soon as a decision is made. Usernames listed in `PORTAL_ADMINS` are admins and skip review.
+  deleted as soon as a decision is made. Accounts whose OTP-verified email is listed in `PORTAL_ADMIN_EMAILS` are admins and skip review (usernames are never trusted). Re-sent OTPs have a cooldown, a per-window cap and a carried-over guess budget; recovery endpoints are limited per username and answer uniformly. Form `pattern`s are restricted to a backtracking-safe regex subset.
 - Only `preferred_name` is user-mutable (`PATCH /api/me`). Recovery (`/api/recovery/*`): username + last 4 digits
   emails a sign-in code to the address on file; email or legal-name changes need the new-email OTP plus a full
   face + ID request approved by an admin.
