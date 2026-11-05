@@ -107,3 +107,18 @@ Used for: one-shot decisions (verification, AGM check, club and expense approval
 receipts back one transaction), form drafts (on top of the editor's `base_rev` check, so a stale save gets 409),
 publish/unpublish, submission edits vs. admin decisions, OTP attempt counting and single redemption, SSO authorization codes
 (single redemption), account activation, and check-in. Blind `put` is kept only where the last writer may legitimately win.
+
+## Auth audit ledger: monthly tables, checkpoints, anchoring
+
+The identity service (`utsu_portal.authsvc`) records everything in a tamper-evident log. Design choices versus a "hash the whole DB nightly / log every query" approach, which is expensive and bloats the DB:
+
+- **Monthly tables** `audit_YYYY_MM`; one HMAC hash chain spans all months. Registry: `audit_months` (hot → archived → dropped).
+- **DB access is audited per request**, not per query: with `PORTAL_AUDIT_DB_ACCESS=1` (always on in the auth service) one `db.access` entry lists the requester, collections, ops, and capped ids (never values). All state changes carry redacted, compressed, encrypted before/after snapshots, so the log fully reconstructs history.
+- **Nightly checkpoint** (`audit_checkpoints`): an incremental Merkle root over the entries since the last checkpoint, chained to the previous checkpoint digest; skipped when nothing meaningful happened. The checkpoint is also written to the log.
+- **Blockchain anchoring** via a provider submodule, off by default (`PORTAL_ANCHOR=none`). Only the 32-byte checkpoint digest leaves the system. Providers: `local` (dev), `ots` (OpenTimestamps/Bitcoin, no keys/fees; proofs need a later upgrade step), `http` (`PORTAL_ANCHOR_URL`/`PORTAL_ANCHOR_TOKEN` gateway to any chain), or `pkg.module:factory`. Failures leave the checkpoint `pending` and are retried; the service never blocks on the chain.
+- **Archive after ~90 days**: a month is verified, gzipped into `audit_archive` (sha256, Merkle root, boundary hashes). **Drop after ~180 days** only if the archive re-verifies and an anchored checkpoint covers it. The chain stays verifiable after a drop.
+- **Weekly verify** walks the hot chain, checkpoint chain/roots, and archive checksums; results go to `audit_checks` and the log.
+- **Scheduling**: `python -m utsu_portal.authsvc maintain [--force]` (k8s `deploy/k8s/maintenance-cronjob.yaml`, Cloud Scheduler, or `POST /api/admin/audit/maintenance/run`). Jobs claim themselves with optimistic locking, so duplicates are safe.
+- Admin API: `/api/admin/audit/{verify,checkpoints,checks,tables,archive/{month},maintenance/run}`.
+
+Limits: the HMAC chain cannot stop an attacker holding both the DB and `PORTAL_SECRET`; the external anchor is what covers that. The OTS/HTTP providers, the CronJob and non-SQLite stores are untested against real services.

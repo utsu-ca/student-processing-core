@@ -23,6 +23,7 @@ class Context:
     mailer: Mailer
     bus: EventBus = field(default_factory=EventBus)
     identity: Any = None  # Identity (local store or remote auth service)
+    anchor: Any = None  # AnchorProvider
     audit: Any = None  # AuditLog, set by create_app
     limiter: Any = None
     services: dict = field(default_factory=dict)  # shared objects between modules (e.g. the SSO provider)

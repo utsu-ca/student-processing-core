@@ -1,0 +1,37 @@
+# Nightly audit checkpoint (+ anchor), archive/drop of old monthly tables, weekly integrity verification.
+# Jobs claim themselves with optimistic locking, so overlapping runs or extra schedulers are harmless.
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: auth-maintenance, namespace: utsu-portal}
+spec:
+  schedule: "15 3 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata: {labels: {app: auth-maintenance}}
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+          containers:
+            - name: maintain
+              image: ghcr.io/utsu-ca/student-processing-core:latest   # pin by digest in production
+              command: [python, -m, utsu_portal.authsvc, maintain]
+              env:
+                - {name: DATABASE_URL_FILE, value: /run/secrets/portal/database-url}
+                - {name: PORTAL_AUTH_SIGNING_KEY_FILE, value: /run/secrets/portal/auth-signing-key}
+                - {name: PORTAL_AUTH_URL, value: ""}
+              envFrom: [{configMapRef: {name: portal-config}}]
+              securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}}
+              resources: {requests: {cpu: 50m, memory: 128Mi}, limits: {memory: 512Mi}}
+              volumeMounts:
+                - {name: secrets, mountPath: /run/secrets/portal, readOnly: true}
+                - {name: tmp, mountPath: /tmp}
+          volumes:
+            - name: secrets
+              secret: {secretName: auth-secrets, defaultMode: 0440}
+            - {name: tmp, emptyDir: {medium: Memory, sizeLimit: 64Mi}}

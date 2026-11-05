@@ -10,14 +10,14 @@ import hmac
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
-from .app import build_app
-from .context import Context
-from .mailer import Mailer, mailer_from_env
-from .modules.admin import AdminModule
-from .modules.audit import AuditModule
-from .modules.auth import AuthModule
-from .settings import Settings
-from .store import Store
+from ..app import build_app
+from ..context import Context
+from ..mailer import Mailer, mailer_from_env
+from ..modules.admin import AdminModule
+from ..modules.audit import AuditModule
+from ..modules.auth import AuthModule
+from ..settings import Settings
+from ..store import Store
 
 
 class Lookup(BaseModel):
@@ -73,4 +73,6 @@ def create_auth_app(settings: Settings | None = None, store: Store | None = None
     if settings.service_token is not None and len(settings.service_token) < 32:
         raise RuntimeError("PORTAL_SERVICE_TOKEN must be at least 32 characters")
     mods = (AuthModule(), AdminModule(), AuditModule("/api/admin/auth-audit"), InternalModule())
+    from dataclasses import replace
+    settings = replace(settings, audit_db_access=True)  # the identity service records every read/write with its requester
     return build_app(settings, store, mailer or mailer_from_env(), mods, seed=False, ui=False)

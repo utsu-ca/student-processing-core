@@ -1,6 +1,8 @@
 """Admin API for the audit log: browse, compare revisions (Wikipedia-style diff), verify integrity, export."""
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, HTTPException, Response
 
 from .. import audit as A
@@ -21,7 +23,7 @@ class AuditModule:
         log: A.AuditLog = ctx.audit
 
         def entry(eid: str) -> dict:
-            d = ctx.store.get("audit", eid)
+            d = log.get(int(eid)) if eid.isdigit() else None
             if not d:
                 raise HTTPException(404, "no such audit entry")
             return d
@@ -38,6 +40,31 @@ class AuditModule:
         @r.get("/verify")
         def verify(_: dict = admin):
             return log.verify()
+
+        @r.get("/checkpoints")
+        def checkpoints(_: dict = admin):
+            return sorted(ctx.store.list("audit_checkpoints"), key=lambda c: c["to_seq"], reverse=True)[:100]
+
+        @r.get("/checks")
+        def checks(_: dict = admin):
+            return sorted(ctx.store.list("audit_checks"), key=lambda c: c["at"], reverse=True)[:20]
+
+        @r.get("/tables")
+        def tables(_: dict = admin):
+            return [{k: v for k, v in m.items() if k != "id"} for m in log.months(("hot", "archived", "dropped"))]
+
+        @r.post("/maintenance/run")
+        def run(force: bool = False, a: dict = admin):
+            from .. import maintenance
+            log.record(a["uuid"], "audit.maintenance_run", meta={"force": force})
+            return maintenance.run_due(ctx, force)
+
+        @r.get("/archive/{month}")
+        def archive(month: str, a: dict = admin):
+            if not re.fullmatch(r"\d{4}_\d{2}", month) or not ctx.store.get("audit_archive", month):
+                raise HTTPException(404, "no such archive")
+            log.record(a["uuid"], "audit.read", f"archive:{month}")
+            return {"entries": [log.public(d) for d in log.read_archive(month)]}
 
         @r.get("/export")
         def export(a: dict = admin):

@@ -17,6 +17,7 @@ from .crypto import Crypter, EncryptingStore
 from .identity import LocalIdentity, RemoteIdentity, http_fetch
 from .events import bus_from_settings
 from .modules.audit import AuditModule
+from .anchor import provider_from_settings
 from .ratelimit import limiter_from_settings
 from .context import Context
 from .mailer import Mailer, mailer_from_env
@@ -28,7 +29,7 @@ from .modules.clubs import ClubsModule
 from .modules.sso import SSOModule
 from .modules.forms import FormsModule
 from .settings import FORMS_DIR, Settings
-from .store import Store, open_store
+from .store import ACCESS, AccessLog, AuditedStore, Store, open_store
 
 STATIC = Path(__file__).parent / "static"
 CORE_MODULES = (SSOModule(), AuthModule(), AgmVerifyModule(), AgmModule(), FormsModule(), AdminModule(), ClubsModule(), AuditModule())
@@ -72,9 +73,12 @@ def create_app(settings: Settings | None = None, store: Store | None = None, mai
 def build_app(settings: Settings, store: Store | None, mailer: Mailer | None, modules: tuple, identity=None,
               seed: bool = True, ui: bool = True) -> FastAPI:
     store = EncryptingStore(store or open_store(settings.store), Crypter(settings.data_key, settings.secret))
+    if settings.audit_db_access:
+        store = AuditedStore(store)
     ctx = Context(store, settings, mailer or mailer_from_env(), bus=bus_from_settings(settings))
     ctx.identity = identity or LocalIdentity(ctx)
     ctx.audit, ctx.limiter = AuditLog(ctx), limiter_from_settings(settings)
+    ctx.anchor = provider_from_settings(settings, store)
     app = FastAPI(title="UTSU applicant portal", docs_url=None, redoc_url=None)
     app.state.ctx = ctx
     if seed:
@@ -92,13 +96,25 @@ def build_app(settings: Settings, store: Store | None, mailer: Mailer | None, mo
     @app.middleware("http")
     async def audit_requests(request: Request, call_next):
         path = request.url.path
-        resp = await call_next(request)
+        who = actor_of(request)
+        pid = hmac.new(settings.secret.encode(), client_ip(request).encode(), hashlib.sha256).hexdigest()[:12]
+        access = AccessLog(who or f"anonymous:{pid}") if settings.audit_db_access and not path.startswith(("/static", "/healthz", "/readyz")) else None
+        token = ACCESS.set(access)  # every store call made while serving this request is attributed to the requester
+        try:
+            resp = await call_next(request)
+        finally:
+            ACCESS.reset(token)
+        if access is not None and access.ops and not path.startswith("/api/admin/auth-audit"):
+            try:  # one digest entry per request: which identity touched which collections/ids (never values)
+                await run_in_threadpool(ctx.audit.record, access.requester, "db.access", getattr(request.scope.get("route"), "path", path),
+                                        None, None, {"ops": access.ops, "method": request.method, "status": resp.status_code})
+            except Exception:
+                log.exception("access audit failed")
         watched = request.method not in ("GET", "HEAD", "OPTIONS") or path.startswith("/api/admin/")
         if watched and not path.startswith("/api/admin/audit") and not path.startswith("/static"):
             route = request.scope.get("route")
-            pid = hmac.new(settings.secret.encode(), client_ip(request).encode(), hashlib.sha256).hexdigest()[:12]
             try:  # no bodies, query strings or tokens are logged; IPs are keyed-hashed
-                await run_in_threadpool(ctx.audit.record, actor_of(request), f"http.{request.method}",
+                await run_in_threadpool(ctx.audit.record, who, f"http.{request.method}",
                                         getattr(route, "path", path), None, None,
                                         {"status": resp.status_code, "ip": pid, "params": {k: str(v)[:80] for k, v in request.path_params.items()}})
             except Exception:

@@ -1,6 +1,7 @@
 """Database-agnostic document store. Implement `Store` to add a backend."""
 from __future__ import annotations
 
+import contextvars
 import json
 import sqlite3
 import random
@@ -355,3 +356,57 @@ def open_store(spec: str) -> Store:
             raise TypeError(f"{spec} did not return a Store")
         return store
     raise ValueError(f"unknown store {spec!r}")
+
+
+class AccessLog:
+    """Per-request record of store operations; `AuditedStore` appends, the HTTP middleware flushes it as ONE audit entry."""
+
+    def __init__(self, requester: str) -> None:
+        self.requester, self.ops, self._lock = requester, {}, threading.Lock()
+
+    def add(self, op: str, col: str, ident: str | None) -> None:
+        with self._lock:
+            e = self.ops.setdefault(f"{op}:{col}", {"n": 0, "ids": []})
+            e["n"] += 1
+            if ident and len(e["ids"]) < 20 and ident not in e["ids"]:
+                e["ids"].append(ident)
+
+
+ACCESS: contextvars.ContextVar[AccessLog | None] = contextvars.ContextVar("portal_access", default=None)
+
+
+class AuditedStore(Store):
+    """Records which identity read or wrote which collection/ids (never values). Ops are batched per request into a single
+    audit entry, which keeps full traceability ("who touched what") without a log row per query. Audit tables are exempt."""
+
+    def __init__(self, inner: Store) -> None:
+        self.inner = inner
+
+    def _note(self, op: str, col: str, ident: str | None = None) -> None:
+        a = ACCESS.get()
+        if a is not None and not col.startswith("audit"):
+            a.add(op, col, ident)
+
+    def get(self, col, id):
+        self._note("read", col, id)
+        return self.inner.get(col, id)
+
+    def put(self, col, id, doc):
+        self._note("write", col, id)
+        self.inner.put(col, id, doc)
+
+    def delete(self, col, id):
+        self._note("delete", col, id)
+        self.inner.delete(col, id)
+
+    def create(self, col, id, doc):
+        self._note("write", col, id)
+        return self.inner.create(col, id, doc)
+
+    def replace(self, col, id, doc, expected_rev):
+        self._note("write", col, id)
+        return self.inner.replace(col, id, doc, expected_rev)
+
+    def list(self, col, **equals):
+        self._note("query", col)
+        return self.inner.list(col, **equals)

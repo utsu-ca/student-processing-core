@@ -133,7 +133,7 @@ def test_verification_decided_once_even_with_two_admins():
     [t.join() for t in ts]
     assert sorted(codes) == [200, 404, 404, 404]
     assert store.get("verifications", vid)["status"] == "approved"
-    assert sum(1 for e in store.list("audit") if e["action"] == "verification.decided") == 1
+    assert sum(1 for m in store.list("audit_months") for e in store.list("audit_" + m["month"]) if e["action"] == "verification.decided") == 1
 
 
 def test_sso_code_redeemable_once():

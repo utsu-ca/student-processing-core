@@ -84,9 +84,10 @@ def test_audit_chain_diff_and_tamper_detection():
     exp = c.get("/api/admin/audit/export", headers=ah)
     assert json.loads(gzip.decompress(exp.content).splitlines()[0])["seq"] == 1
     # tampering with a stored entry (or deleting one) breaks verification
-    raw = store.get("audit", ch["id"])
+    col = "audit_" + A.month_of(ch["ts"])
+    raw = store.get(col, ch["id"])
     raw["actor"] = "someone-else"
-    store.put("audit", ch["id"], raw)
+    store.put(col, ch["id"], raw)
     assert c.get("/api/admin/audit/verify", headers=ah).json()["ok"] is False
 
 
@@ -94,7 +95,7 @@ def test_audit_never_logs_secrets_or_images():
     c, mail, store = boot()
     ah, uh = setup_admin_and_user(c, mail)
     activate(c, ah, uh)
-    blob = json.dumps([d for d in store.list("audit")]) + json.dumps(A.redact({"face": IMG, "otp": "1", "x": IMG}))
+    blob = json.dumps([d for m in store.list("audit_months") for d in store.list("audit_" + m["month"])]) + json.dumps(A.redact({"face": IMG, "otp": "1", "x": IMG}))
     assert IMG not in blob and "1234567890" not in blob
     assert A.redact({"token": "t", "n": {"code": "1", "ok": 2}}) == {"token": "[redacted]", "n": {"code": "[redacted]", "ok": 2}}
 

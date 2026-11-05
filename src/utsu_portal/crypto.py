@@ -15,8 +15,11 @@ SENSITIVE: dict[str, tuple[str, ...]] = {
     "media": ("face", "id_card"),
     "agm_media": ("face", "id_card"),
     "receipts": ("data_url",),
-    "audit": ("blob",),
-}
+}  # plus the `blob` field of every `audit_*` collection (see `sensitive`)
+
+
+def sensitive(col: str) -> tuple[str, ...]:
+    return ("blob",) if col.startswith("audit_") else SENSITIVE.get(col, ())
 
 
 class Crypter:
@@ -48,14 +51,14 @@ class EncryptingStore(Store):
 
     def _out(self, col: str, doc: dict | None) -> dict | None:
         if doc:
-            for f in SENSITIVE.get(col, ()):
+            for f in sensitive(col):
                 if isinstance(doc.get(f), str):
                     doc[f] = self.c.dec(doc[f])
         return doc
 
     def _in(self, col: str, doc: dict) -> dict:
         out = dict(doc)
-        for f in SENSITIVE.get(col, ()):
+        for f in sensitive(col):
             if isinstance(out.get(f), str):
                 out[f] = self.c.enc(out[f])
         return out

@@ -48,6 +48,10 @@ class Settings:
     rate_window: int = 60
     max_body_bytes: int = 8_000_000
     hsts: bool = True
+    anchor: str = "none"  # none | local | ots | http | pkg.module:factory (see anchor.py)
+    anchor_url: str | None = None
+    anchor_token: str | None = None
+    audit_db_access: bool = False  # record every store read/write with the requester (one digest entry per request)
     auth_signing_key: str | None = None  # Ed25519 PEM held ONLY by the auth service (derived from secret when unset)
     auth_url: str | None = None  # set => portal runs against a separate auth service
     auth_public_key: str | None = None  # PEM public key(s) of the auth service, used to verify sessions
@@ -72,4 +76,6 @@ class Settings:
                    auth_signing_key=env("PORTAL_AUTH_SIGNING_KEY"), auth_url=env("PORTAL_AUTH_URL"),
                    auth_public_key=env("PORTAL_AUTH_PUBLIC_KEY"), service_token=env("PORTAL_SERVICE_TOKEN"),
                    redis_url=env("PORTAL_REDIS_URL"), data_key=env("PORTAL_DATA_KEY"),
-                   rate_limit_auth=int(env("PORTAL_RATE_LIMIT_AUTH", "30")), hsts=env("PORTAL_HSTS", "1") != "0")
+                   rate_limit_auth=int(env("PORTAL_RATE_LIMIT_AUTH", "30")), hsts=env("PORTAL_HSTS", "1") != "0",
+                   anchor=env("PORTAL_ANCHOR", "none"), anchor_url=env("PORTAL_ANCHOR_URL"), anchor_token=env("PORTAL_ANCHOR_TOKEN"),
+                   audit_db_access=env("PORTAL_AUDIT_DB_ACCESS", "0") == "1")
