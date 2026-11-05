@@ -161,8 +161,16 @@ def _coerce(f: dict, v: Any) -> Any:
             raise FormError(f"at least {f['min']} characters")
         if "max" in f and len(s) > f["max"] and t in {"text", "textarea"}:
             raise FormError(f"at most {f['max']} characters")
-        if "pattern" in f and not re.fullmatch(f["pattern"], s):
-            raise FormError("invalid format")
+        if "pattern" in f:
+            pat = f.get("_pattern_re")
+            if pat is None:
+                try:
+                    pat = re.compile(f["pattern"])
+                except re.error:
+                    raise FormError("invalid format")
+                f["_pattern_re"] = pat
+            if not pat.fullmatch(s):
+                raise FormError("invalid format")
         return s
     if t == "number":
         if isinstance(v, bool) or not isinstance(v, (int, float)):
