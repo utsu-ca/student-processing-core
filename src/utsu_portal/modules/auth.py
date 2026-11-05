@@ -123,7 +123,7 @@ class AuthModule:
             if not S.create("emails", ekey, {"uuid": uid}):
                 S.delete("student_ids", sid)
                 raise HTTPException(409, "email already registered")
-            admin = clean_text(b.username).lower() in {a.lower() for a in ctx.settings.admins}
+            admin = b.email.strip().lower() in ctx.settings.admin_emails  # username is never trusted; the email OTP below proves the mailbox
             S.put("users", uid, {"uuid": uid, "email": b.email.lower(), "preferred_name": b.preferred_name or b.first_name,
                                  "first_name": b.first_name, "last_name": b.last_name,
                                  "student_number": security.truncate_student_number(b.student_number)})
@@ -209,8 +209,15 @@ class AuthModule:
                     for v in S.list("verifications", uuid=acct["uuid"])]
 
         # ---- account recovery -------------------------------------------------
+        def _guard(uid: str) -> None:
+            """Per-username budget (not per-IP): 10^4 student-number guesses cannot be spread across addresses."""
+            st = ctx.settings
+            if not ctx.limiter.allow(f"recovery:{uid}", st.recovery_attempts, st.recovery_window):
+                raise HTTPException(429, "too many recovery attempts; try again later", headers={"Retry-After": str(st.recovery_window)})
+
         def _recoverable(b: Recover) -> tuple[dict, dict]:
             uid = ctx.uid(b.username)
+            _guard(uid)
             u, a = S.get("users", uid), S.get("accounts", uid)
             if not u or not a or u["student_number"] != b.student_number_trunc:
                 raise HTTPException(400, "details do not match an account")
@@ -219,6 +226,7 @@ class AuthModule:
         @r.post("/recovery/start")
         def recovery_start(b: Recover):
             uid = ctx.uid(b.username)
+            _guard(uid)
             u = S.get("users", uid)
             if u and u["student_number"] == b.student_number_trunc:
                 ctx.send_otp("login", uid, u["email"])
@@ -226,11 +234,15 @@ class AuthModule:
 
         @r.post("/recovery/email-otp")
         def recovery_email_otp(b: RecoveryOtp):
-            u, a = _recoverable(b)
-            if not EMAIL.match(b.new_email) or S.get("emails", ctx.email_key(b.new_email)):
-                raise HTTPException(422, "invalid or unavailable email")
-            ctx.send_otp("newemail", a["uuid"], b.new_email, {"email": b.new_email.lower()})
-            return {"detail": "code sent to the new address"}
+            try:
+                u, a = _recoverable(b)
+            except HTTPException as e:
+                if e.status_code != 400:
+                    raise
+                return {"detail": "if the details match, a code was sent to the new address"}  # uniform: no guessing oracle
+            if EMAIL.match(b.new_email) and not S.get("emails", ctx.email_key(b.new_email)):
+                ctx.send_otp("newemail", a["uuid"], b.new_email, {"email": b.new_email.lower()})
+            return {"detail": "if the details match, a code was sent to the new address"}
 
         @r.post("/recovery/request", status_code=201)
         def recovery_request(b: RecoveryChange):

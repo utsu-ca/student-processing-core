@@ -85,7 +85,7 @@ def test_encrypting_store_passes_locking_through():
 
 def boot():
     mail, store = OutboxMailer(), MemoryStore()
-    return TestClient(create_app(Settings(secret="s" * 40, admins=("boss",)), store, mail)), mail, store
+    return TestClient(create_app(Settings(secret="s" * 40, admin_emails=("boss@x.ca",)), store, mail)), mail, store
 
 
 def test_otp_cannot_be_replayed_or_brute_forced_in_parallel():

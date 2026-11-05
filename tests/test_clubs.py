@@ -17,7 +17,7 @@ PDF = lambda b: "data:application/pdf;base64," + base64.b64encode(b).decode()
 @pytest.fixture
 def env():
     mail = OutboxMailer()
-    c = TestClient(create_app(Settings(secret="s" * 32, admins=("boss", "boss2")), mailer=mail))
+    c = TestClient(create_app(Settings(secret="s" * 32, admin_emails=("boss@x.ca", "boss2@x.ca")), mailer=mail))
     heads = {}
     for i, u in enumerate(("boss", "boss2")):
         register(c, mail, u, f"{u}@x.ca", sn=f"900000000{i}", first="Bo", last="Ss")

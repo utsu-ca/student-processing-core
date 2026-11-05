@@ -19,11 +19,16 @@ def env_secret(name: str, default: str | None = None) -> str | None:
 @dataclass
 class Settings:
     secret: str = field(default_factory=lambda: secrets.token_hex(32))
-    admins: tuple[str, ...] = ()  # usernames bootstrapped as admins
+    admin_emails: tuple[str, ...] = ()  # only an account whose OTP-verified email is listed here becomes admin (usernames are never trusted)
     store: str = "memory"  # memory | sqlite:<path> | firestore
     token_ttl: int = 8 * 3600
     otp_ttl: int = 600
-    otp_attempts: int = 5
+    otp_attempts: int = 5  # wrong guesses allowed per account per otp_window (carried across re-sent codes)
+    otp_window: int = 900
+    otp_cooldown: int = 60  # minimum seconds between codes for one account
+    otp_max_sends: int = 5  # codes per account per otp_window
+    recovery_attempts: int = 5  # recovery requests per username per recovery_window, regardless of source IP
+    recovery_window: int = 3600
     max_image_bytes: int = 1_500_000
     division_codes: tuple[str, ...] = ("UTSG", "UTM", "UTSC")
     seed_forms: bool = True
@@ -65,8 +70,8 @@ class Settings:
             raise RuntimeError("PORTAL_SECRET must be set: it peppers the username/student-id hashes and must be stable")
         if len(secret) < 32:
             raise RuntimeError("PORTAL_SECRET must be at least 32 characters (e.g. `openssl rand -hex 32`)")
-        admins = tuple(a.strip() for a in (env("PORTAL_ADMINS") or "").split(",") if a.strip())
-        return cls(secret=secret, admins=admins, store=env("PORTAL_STORE", "memory"),
+        admin_emails = tuple(a.strip().lower() for a in (env("PORTAL_ADMIN_EMAILS") or "").split(",") if a.strip())
+        return cls(secret=secret, admin_emails=admin_emails, store=env("PORTAL_STORE", "memory"),
                    sso_issuer=env("PORTAL_BASE_URL", "http://localhost:8000").rstrip("/"), sso_key_pem=env("PORTAL_SSO_KEY"),
                    zoom_client_secret=env("PORTAL_ZOOM_CLIENT_SECRET"), zoom_url=env("PORTAL_ZOOM_URL", ""),
                    zoom_sso_url=env("PORTAL_ZOOM_SSO_URL", ""),

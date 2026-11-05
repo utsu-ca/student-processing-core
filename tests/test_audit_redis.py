@@ -26,7 +26,7 @@ from utsu_portal.store import MemoryStore
 
 def boot(**kw):
     mail, store = OutboxMailer(), MemoryStore()
-    app = create_app(Settings(secret="s" * 40, admins=("boss",), **kw), store, mail)
+    app = create_app(Settings(secret="s" * 40, admin_emails=("boss@x.ca",), **kw), store, mail)
     return TestClient(app), mail, store
 
 

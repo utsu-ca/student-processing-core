@@ -20,7 +20,7 @@ REDIR = "https://zoom.example/sso/cb"
 @pytest.fixture
 def env():
     mail = OutboxMailer()
-    c = TestClient(create_app(Settings(secret="s" * 32, admins=("boss",), zoom_client_secret="zsecret", zoom_redirect_uris=(REDIR,),
+    c = TestClient(create_app(Settings(secret="s" * 32, admin_emails=("boss@x.ca",), zoom_client_secret="zsecret", zoom_redirect_uris=(REDIR,),
                                        zoom_url="https://zoom.example/j/1", zoom_sso_url="https://zoom.example/sso"), mailer=mail))
     register(c, mail, "boss", "boss@x.ca", sn="9999999999", first="Bo", last="Ss")
     h = {"boss": login(c, mail, "boss")}

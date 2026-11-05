@@ -37,12 +37,30 @@ class Context:
     def email_key(self, email: str) -> str:
         return hashlib.sha256(email.lower().encode()).hexdigest()
 
-    def send_otp(self, purpose: str, subject: str, to: str, payload: dict | None = None) -> None:
-        code = security.new_otp()
-        self.store.put("otps", f"{purpose}:{subject}", {
-            "hash": security.hash_otp(self.settings.secret, f"{purpose}:{subject}", code),
-            "exp": self.now() + self.settings.otp_ttl, "attempts": 0, "payload": payload or {}})
+    def send_otp(self, purpose: str, subject: str, to: str, payload: dict | None = None) -> bool:
+        """Issue a code unless the account is cooling down or over its per-window cap. Wrong-guess counts carry over to the
+        new code within the window, so re-requesting codes cannot reset the guess budget. Returns False when throttled
+        (callers must answer identically either way)."""
+        s, now, key = self.settings, self.now(), f"{purpose}:{subject}"
+        code, seen = security.new_otp(), {}
+
+        def issue(o):
+            if o and now - o.get("window", 0) < s.otp_window:
+                window, sends, attempts = o["window"], o.get("sends", 0), 0 if o.get("used") else o["attempts"]
+                if now - o.get("sent", 0) < s.otp_cooldown or sends >= s.otp_max_sends or attempts >= s.otp_attempts:
+                    seen["ok"] = False
+                    return None
+            else:
+                window, sends, attempts = now, 0, 0
+            seen["ok"] = True
+            return {"hash": security.hash_otp(s.secret, key, code), "exp": now + s.otp_ttl, "attempts": attempts,
+                    "window": window, "sends": sends + 1, "sent": now, "payload": payload or {}}
+
+        self.store.update("otps", key, issue)
+        if not seen.get("ok"):
+            return False
         self.mailer.send(to, "Your UTSU verification code", f"Your code is {code}. It expires in {self.settings.otp_ttl // 60} minutes.")
+        return True
 
     def check_otp(self, purpose: str, subject: str, code: str, consume: bool = True) -> dict | None:
         key = f"{purpose}:{subject}"

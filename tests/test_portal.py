@@ -13,7 +13,7 @@ IMG = "data:image/png;base64," + base64.b64encode(b"\x89PNG fake").decode()
 @pytest.fixture
 def env():
     mail = OutboxMailer()
-    app = create_app(Settings(secret="s" * 32, admins=("boss",)), mailer=mail)
+    app = create_app(Settings(secret="s" * 32, admin_emails=("boss@x.ca",)), mailer=mail)
     return TestClient(app), mail
 
 

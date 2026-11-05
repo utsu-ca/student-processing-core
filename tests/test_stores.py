@@ -69,9 +69,9 @@ def test_open_store_specs(tmp_path):
 
 def test_portal_runs_on_sql_store(tmp_path):
     mail = OutboxMailer()
-    c = TestClient(create_app(Settings(secret="s" * 32, admins=("boss",), store=f"sql:sqlite:///{tmp_path}/p.db"), mailer=mail))
+    c = TestClient(create_app(Settings(secret="s" * 32, admin_emails=("boss@x.ca",), store=f"sql:sqlite:///{tmp_path}/p.db"), mailer=mail))
     assert c.get("/healthz").json() == {"ok": True}
-    r = c.post("/api/auth/register", json={"username": "boss", "email": "b@x.ca", "first_name": "B", "last_name": "S", "student_number": "1234567890"})
+    r = c.post("/api/auth/register", json={"username": "boss", "email": "boss@x.ca", "first_name": "B", "last_name": "S", "student_number": "1234567890"})
     assert r.status_code == 201
     assert c.post("/api/auth/verify-email", json={"username": "boss", "code": mail.outbox[-1][2].split("code is ")[1][:6]}).json()["status"] == "verified"
     assert len(c.get("/api/forms").json()) == 3  # seeded forms persisted via SQL

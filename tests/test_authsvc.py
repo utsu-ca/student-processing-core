@@ -21,7 +21,7 @@ def make(auth_pem=None):
     mail = OutboxMailer()
     astore, pstore = MemoryStore(), MemoryStore()
     key = security.load_signing_key(auth_pem, "a" * 40)
-    auth = create_auth_app(Settings(secret="a" * 40, admins=("boss",), service_token=SVC), astore, mail)
+    auth = create_auth_app(Settings(secret="a" * 40, admin_emails=("boss@x.ca",), service_token=SVC), astore, mail)
     ac = TestClient(auth)
     # the auth service signs with a key derived from ITS secret; the portal only receives the public half
     pub = security.public_pem(auth.state.ctx.identity.key)
