@@ -150,6 +150,14 @@ recorded are listed and skipped: unknown application, unverified, missing decisi
 decision recorded before reconciliation is accepted with a warning (for example instant approvals). Recording an
 application again replaces its decision, with a warning; the same decision again with no amount keeps the stored amount.
 
+Sheets that come back as `.docx` in one folder per reviewer, possibly from batches that no longer match the database,
+can be merged on their own (no database; the folder name is the reviewer, `[B012-01]` tags identify records, and a score
+such as `2-3` becomes `2.5`):
+
+```powershell
+python -m utsu_programs.sap.merge_docx path\to\reviewers -o secrets\merged_reviews.csv
+```
+
 `decided` is the last stage: the application is **complete**, which makes it final for that term (any other
 application of the student for that term becomes `not_considered`). `sap_run.json` counts verified applications per
 stage. Databases from before the `stage` column get it filled in on the next run (`decided` if there is a decision,
