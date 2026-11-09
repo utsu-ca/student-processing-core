@@ -55,6 +55,8 @@ def test_folders_are_the_reviewers_and_scores_are_merged(tmp_path):
     assert (one["Justin"], one["Mike"], one["mean_score"], one["status"]) == ("2.5", "3", "2.75", "agreed")
     assert one["notes"] == "Justin: close | Mike: ok" and one["n_reviewers"] == "2"
     assert rows["B001-02"]["status"] == "discuss"
+    assert one["suggested_amount"] == str(sap.suggested_amount(2.75))
+    assert one["rubric_amount"] == "300"
     assert (rows["B003-01"]["David"], rows["B003-01"]["Mike"], rows["B003-01"]["status"]) == ("5", "2", "discuss")
     assert "B003-02" not in rows
     assert any("B003-02" in p and "invalid" in p for p in result["problems"])
@@ -74,6 +76,9 @@ def test_random_reviews_are_merged_as_generated(tmp_path, seed):
         assert float(row["mean_score"]) == pytest.approx(sum(scores) / len(scores), abs=1e-4)
         spread = max(scores) - min(scores)
         assert float(row["spread"]) == spread
+        mean = sum(scores) / len(scores)
+        assert row["suggested_amount"] == sap.suggested_amount(mean)
+        assert row["rubric_amount"] == sap.rubric_amount(mean) <= row["suggested_amount"]
         assert row["status"] == ("single" if len(given) < 2 else "discuss" if spread >= 2 else "agreed")
     assert sum("invalid need level" in p for p in result["problems"]) == len(made["invalid"])
 
@@ -84,6 +89,23 @@ def test_random_reviews_cover_the_messy_cases(tmp_path):
     assert any(s % 1 == 0.5 for g in given for s in g.values())  # ranges
     assert made["invalid"]
     assert {len(g) for g in given} == {1, 2}
+
+
+def test_suggested_amount_follows_the_rubric():
+    assert sap.suggested_amount(0) == 0
+    for level, maximum in sap.RUBRIC_AMOUNT.items():
+        assert sap.rubric_amount(level) == maximum
+        assert abs(sap.curve_amount(level) - maximum) <= 70
+        assert sap.suggested_amount(level) >= maximum  # the rubric amount is the minimum
+    assert sap.suggested_amount(3) == 650 and sap.suggested_amount(4) == 960  # raised by the curve, rounded to $10
+    for x in range(21):
+        level = x / 4
+        suggested = sap.suggested_amount(level)
+        assert suggested >= sap.rubric_amount(level)
+        assert suggested % 10 == 0 or suggested == sap.rubric_amount(level)
+    steps = [sap.suggested_amount(x / 4) for x in range(21)]
+    assert steps == sorted(steps)  # more need never means less money
+    assert sap.suggested_amount(-1) == 0 and sap.suggested_amount(9) == sap.suggested_amount(5)
 
 
 def test_generated_reviews_are_reproducible(tmp_path):

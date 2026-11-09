@@ -198,6 +198,68 @@ RATING_LEVELS = range(6)
 RUBRIC_AMOUNT = {0: 0, 1: 125, 2: 300, 3: 650, 4: 900, 5: 1500}
 # Two reviewers whose levels are this far apart (or more) must discuss the application.
 DISCUSS_SPREAD = 2
+
+
+def fit_exponential(amounts: dict[int, float]) -> tuple[float, float]:
+    """
+    Least-squares a, k of amount = a * (exp(k * level) - 1): exponential growth through the origin (a need level of
+    0 is worth $0). For a given k the best a is a linear fit; k is found by a ternary search on the squared error.
+
+    >>> a, k = fit_exponential({x: math.exp(x) - 1 for x in range(5)})
+    >>> round(a, 6), round(k, 6)
+    (1.0, 1.0)
+    """
+    def best(k: float) -> tuple[float, float]:
+        basis = {x: math.expm1(k * x) for x in amounts}
+        a = sum(basis[x] * y for x, y in amounts.items()) / sum(f * f for f in basis.values())
+        return a, sum((a * basis[x] - y) ** 2 for x, y in amounts.items())
+
+    low, high = 1e-6, 5.0
+    for _ in range(200):
+        third = (high - low) / 3
+        if best(low + third)[1] < best(high - third)[1]:
+            high -= third
+        else:
+            low += third
+    k = (low + high) / 2
+    return best(k)[0], k
+
+
+# The rubric maximums as a smooth curve, so a level between two rubric levels (the mean of two reviewers, or a
+# score like 2.5) has an amount too. Fitted once, here, from RUBRIC_AMOUNT; it is within about $70 of each maximum.
+RUBRIC_CURVE = fit_exponential(RUBRIC_AMOUNT)
+
+
+def curve_amount(level: float) -> float:
+    """
+    The amount for a need level (0-5, fractions allowed) on the exponential curve fitted to the rubric.
+
+    >>> [round(curve_amount(x)) for x in (0, 2.5, 5)]
+    [0, 440, 1485]
+    """
+    level = min(max(level, RATING_LEVELS[0]), RATING_LEVELS[-1])
+    a, k = RUBRIC_CURVE
+    return a * math.expm1(k * level)
+
+
+def rubric_amount(level: float) -> int:
+    """
+    The rubric maximum of the highest whole need level at or below `level` (the least a score of `level` is worth).
+
+    >>> [rubric_amount(x) for x in (0, 2.5, 3, 4.9, 5)]
+    [0, 300, 650, 900, 1500]
+    """
+    return RUBRIC_AMOUNT[int(min(max(level, RATING_LEVELS[0]), RATING_LEVELS[-1]))]
+
+
+def suggested_amount(level: float) -> int:
+    """
+    The curve's amount rounded to the nearest $10, but never less than the rubric amount of the level.
+
+    >>> [suggested_amount(x) for x in (0, 1, 2, 2.5, 3, 4, 5)]
+    [0, 130, 320, 440, 650, 960, 1500]
+    """
+    return max(int(curve_amount(level) / 10 + 0.5) * 10, rubric_amount(level))
 MERGED_FIELDS = ["uuid", "record_id", "stream", "requested_amount", "wfni", "emergency", "reviewers", "ratings",
                  "n_ratings", "mean_level", "spread", "suggested_amount", "status", "notes"]
 

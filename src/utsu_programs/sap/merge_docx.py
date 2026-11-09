@@ -4,7 +4,9 @@ Merge reviewers' batch .docx sheets into one table, without the database.
     python -m utsu_programs.sap.merge_docx <root> [-o secrets/merged_reviews.csv]
 
 <root>/<reviewer>/**/*.docx: the folder name is the reviewer (a reviewer named in a sheet's header is ignored), and
-each record is found by its [B012-01] tag. A range such as "2-3" is resolved to its midpoint (2.5).
+each record is found by its [B012-01] tag. A range such as "2-3" is resolved to its midpoint (2.5). The suggested
+amount is the mean score on the exponential curve fitted to the rubric maximums (program.RUBRIC_CURVE), rounded to
+the nearest $10 and never below the rubric amount of the mean score's whole level (the rubric_amount column).
 """
 import argparse
 import logging
@@ -12,7 +14,7 @@ import re
 import sys
 from pathlib import Path
 
-from utsu_programs.sap.program import DISCUSS_SPREAD, RATING_LEVELS, _read_text_sheet
+from utsu_programs.sap.program import DISCUSS_SPREAD, RATING_LEVELS, _read_text_sheet, rubric_amount, suggested_amount
 from utsu_std.csv_safe import write_rows
 
 logger = logging.getLogger(__name__)
@@ -98,6 +100,8 @@ def merge(ratings: dict[str, dict[str, tuple[float, str]]]) -> tuple[list[dict],
             "reviewers": "; ".join(sorted(given)),
             **{r: _fmt(given[r][0]) if r in given else "" for r in reviewers},
             "mean_score": _fmt(round(sum(scores) / len(scores), 4)),
+            "rubric_amount": rubric_amount(sum(scores) / len(scores)),
+            "suggested_amount": suggested_amount(sum(scores) / len(scores)),
             "spread": _fmt(spread),
             "status": "single" if len(given) < 2 else "discuss" if spread >= DISCUSS_SPREAD else "agreed",
             "notes": " | ".join(f"{r}: {n}" for r, (_, n) in sorted(given.items()) if n),
@@ -113,7 +117,7 @@ def merge_folder(root: Path | str, output: Path | str) -> dict:
     ratings, problems = collect(root)
     rows, reviewers = merge(ratings)
     output.parent.mkdir(parents=True, exist_ok=True)
-    fields = ["record_id", "batch", "n_reviewers", "reviewers", *reviewers, "mean_score", "spread", "status", "notes"]
+    fields = ["record_id", "batch", "n_reviewers", "reviewers", *reviewers, "mean_score", "rubric_amount", "suggested_amount", "spread", "status", "notes"]
     write_rows(output, fields, rows)
     return {"rows": rows, "problems": problems, "reviewers": reviewers}
 

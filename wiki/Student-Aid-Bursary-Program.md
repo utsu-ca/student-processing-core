@@ -152,11 +152,44 @@ application again replaces its decision, with a warning; the same decision again
 
 Sheets that come back as `.docx` in one folder per reviewer, possibly from batches that no longer match the database,
 can be merged on their own (no database; the folder name is the reviewer, `[B012-01]` tags identify records, and a score
-such as `2-3` becomes `2.5`):
+such as `2-3` becomes `2.5`). `suggested_amount` is the mean score on an exponential curve,
+`a * (exp(k * score) - 1)`, fitted (least squares, through $0 at level 0) to the rubric maximums so that fractional
+scores get an amount, rounded to the nearest $10 and never below `rubric_amount`, the rubric maximum of the mean
+score's whole level (for example a mean of 3 is at least $650, even though the curve gives $583):
 
 ```powershell
 python -m utsu_programs.sap.merge_docx path\to\reviewers -o secrets\merged_reviews.csv
 ```
+
+### Private banking export
+
+Join the merged reviews with the **same database used to assign their batches** and the original full SABP form
+export:
+
+```powershell
+python -m utsu_programs.sap.export_banking secrets\merged_reviews.csv secrets\sabp.csv secrets\data.sqlite -o secrets\reviews_banking.csv
+```
+
+The export preserves the review columns and adds the application UUID, first and last names, email, original email,
+institution name, institution number, transit number, account number and `export_flags`. The record ID resolves to
+one database application, whose UUID is recomputed from the original form row using the normal SABP rules. Missing or
+ambiguous matches, duplicate records and missing required columns stop the export without replacing the output. The
+database is read-only. Verify that the database really corresponds to the review sheets: the same record ID can be
+assigned to a different person in a different database. Applications absent from the form export cannot be recovered
+from the database alone.
+
+Valid emails are converted to `@mail.utoronto.ca`, including addresses on other domains; `email_changed` flags any
+change and `original_email` retains the source. **Confirm changed addresses before use:** converting a personal or
+other U of T address does not establish that the resulting mailbox exists or belongs to the student. The
+`email_domain_similarity` score (0 to 1) compares the original domain to `utoronto.ca` and `mail.utoronto.ca`, taking
+the higher score; for example `toronto.ca` is treated as a likely typo. A score below 0.8 is additionally flagged
+`email_low_domain_similarity`. The score is a heuristic, not evidence that the address belongs to the student.
+Invalid or blank emails are left blank and marked `invalid_email`. `missing_bank_information` flags blank banking
+fields; the script does not validate account numbers. Bank numbers remain strings in the CSV, but spreadsheet
+programs can remove leading zeroes when opening it: import these columns as text.
+
+This file contains highly sensitive banking and identifying information. Store it in `secrets`, restrict access, and
+never distribute it with anonymized reviewer sheets.
 
 `decided` is the last stage: the application is **complete**, which makes it final for that term (any other
 application of the student for that term becomes `not_considered`). `sap_run.json` counts verified applications per
