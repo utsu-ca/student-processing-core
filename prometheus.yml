@@ -1,0 +1,67 @@
+# Prometheus configuration
+# Scrapes metrics from services running on localhost
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'utsu-portal-monitor'
+    environment: 'local-dev'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Load rules for alerts
+rule_files:
+  - "alerts.yml"
+
+scrape_configs:
+  # Monitor Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Portal service metrics
+  - job_name: 'portal'
+    static_configs:
+      - targets: ['localhost:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 5s
+
+  # Authsvc metrics
+  - job_name: 'authsvc'
+    static_configs:
+      - targets: ['localhost:8001']
+    metrics_path: '/metrics'
+
+  # Mailsvc metrics
+  - job_name: 'mailsvc'
+    static_configs:
+      - targets: ['localhost:8002']
+    metrics_path: '/metrics'
+
+  # Filesvc metrics
+  - job_name: 'filesvc'
+    static_configs:
+      - targets: ['localhost:8003']
+    metrics_path: '/metrics'
+
+  # Jaeger metrics
+  - job_name: 'jaeger'
+    static_configs:
+      - targets: ['jaeger:14269']
+
+  # PostgreSQL metrics (if using postgres_exporter)
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  # Elasticsearch metrics
+  - job_name: 'elasticsearch'
+    static_configs:
+      - targets: ['elasticsearch:9200']
+    metrics_path: '/_prometheus/metrics'

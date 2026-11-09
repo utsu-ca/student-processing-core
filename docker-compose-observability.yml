@@ -1,0 +1,171 @@
+# Docker Compose configuration for unified observability stack
+# This extends the existing docker-compose.yml with monitoring components
+
+version: '3.8'
+
+services:
+  # =========================================================================
+  # OBSERVABILITY STACK
+  # =========================================================================
+
+  # Jaeger: Distributed tracing (trace visualization)
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    environment:
+      COLLECTOR_ZIPKIN_HTTP_PORT: 9411
+    ports:
+      - "16686:16686"  # Jaeger UI: http://localhost:16686
+      - "6831:6831/udp"  # Jaeger agent (where services send traces)
+    volumes:
+      - jaeger_data:/badger
+    networks:
+      - utsu
+
+  # Prometheus: Metrics collection and alerting
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+    ports:
+      - "9090:9090"  # Prometheus UI: http://localhost:9090
+    networks:
+      - utsu
+    depends_on:
+      - jaeger
+
+  # Grafana: Metrics dashboards
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    ports:
+      - "3000:3000"  # Grafana: http://localhost:3000 (admin/admin)
+    networks:
+      - utsu
+    depends_on:
+      - prometheus
+
+  # ELK Stack: Centralized logging
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"  # Elasticsearch API
+    networks:
+      - utsu
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.11.0
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      XPACK_SECURITY_ENABLED: "false"
+    ports:
+      - "5601:5601"  # Kibana UI: http://localhost:5601
+    networks:
+      - utsu
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # Logstash: Log ingestion and transformation
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.11.0
+    volumes:
+      - ./logstash.conf:/usr/share/logstash/pipeline/logstash.conf:ro
+    environment:
+      - "LS_JAVA_OPTS=-Xmx256m -Xms256m"
+    ports:
+      - "5000:5000/tcp"  # Syslog input
+      - "5000:5000/udp"  # Syslog input
+    networks:
+      - utsu
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+  # =========================================================================
+  # DATABASE FOR AUDIT LOGS (PostgreSQL)
+  # =========================================================================
+
+  audit-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: audit_logs
+      POSTGRES_USER: audit_service
+      POSTGRES_PASSWORD: secure_audit_password
+    volumes:
+      - audit_db_data:/var/lib/postgresql/data
+      - ./init-audit-db.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    ports:
+      - "5433:5432"  # Different port from main DB
+    networks:
+      - utsu
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U audit_service -d audit_logs"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # pgAdmin: PostgreSQL admin UI
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@utsu.ca
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"  # pgAdmin: http://localhost:5050
+    networks:
+      - utsu
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+  # =========================================================================
+  # ALERTING (AlertManager for Prometheus)
+  # =========================================================================
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    ports:
+      - "9093:9093"  # AlertManager UI
+    networks:
+      - utsu
+
+volumes:
+  jaeger_data:
+  prometheus_data:
+  grafana_data:
+  elasticsearch_data:
+  audit_db_data:
+  pgadmin_data:
+  alertmanager_data:
+
+networks:
+  utsu:
+    driver: bridge
