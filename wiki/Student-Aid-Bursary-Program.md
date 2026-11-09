@@ -191,6 +191,57 @@ programs can remove leading zeroes when opening it: import these columns as text
 This file contains highly sensitive banking and identifying information. Store it in `secrets`, restrict access, and
 never distribute it with anonymized reviewer sheets.
 
+### Standard 005 EFT export
+
+The banking export can also create a credit-only Payments Canada Standard 005 file using pure Python. This is a
+generic 1464-byte-record implementation informed by [Payments Canada Standard 005](https://www.payments.ca/sites/default/files/standard005eng.pdf)
+and [moov-io/cadeft](https://github.com/moov-io/cadeft). **BMO compatibility is not certified**: confirm the required
+settings, record separator, encoding, and transaction code with BMO and submit a test file before making payments.
+
+Add an `approved_amount` column to the merged reviews and enter an explicitly approved positive dollar amount for
+**every** row. `suggested_amount` is not approval and is never used as a payment amount. Blank, zero, negative,
+non-numeric, and more-than-two-decimal amounts stop the entire EFT export. Exclude non-payments from the reviewed
+CSV before running it.
+
+Create a private JSON file under `secrets` with settings supplied by BMO. All fields are required; these values are
+fictional placeholders, not BMO defaults:
+
+```json
+{
+  "originator_id": "1234567890",
+  "file_creation_number": 23,
+  "creation_date": "2026-11-08",
+  "payment_date": "2026-11-10",
+  "destination_data_center": "00610",
+  "originating_data_center": "12345",
+  "transaction_code": "450",
+  "originator_short_name": "UTSU",
+  "originator_long_name": "Student Union",
+  "return_institution_id": "000100023",
+  "return_account_number": "123456",
+  "record_separator": "lf"
+}
+```
+
+`originator_id` is exactly 10 printable ASCII characters; `file_creation_number` is an integer from 1 to 9999.
+Use the destination and originating data centre numbers assigned by the bank as five-digit strings; they form part of
+each item trace number. `return_institution_id` is the nine-digit return routing number (`0` + three-digit
+institution + five-digit transit). Dates are `YYYY-MM-DD`; the payment date must not precede the creation date.
+`record_separator` is `none`, `lf`, or `crlf`, as required by BMO. The file is ASCII and contains no trailing record
+separator. Payee names must fit 30 printable ASCII characters; account numbers must be 1–12 digits, institution
+numbers exactly three digits and transit numbers exactly five digits. Invalid inputs stop the export rather than being
+silently truncated or altered.
+
+```powershell
+python -m utsu_programs.sap.export_banking secrets\approved_reviews.csv secrets\sabp.csv secrets\data.sqlite -o secrets\reviews_banking.csv --eft-config secrets\eft_config.json --eft-output secrets\payments_0023.eft
+```
+
+Both files contain sensitive information. The EFT is created only after all rows validate and is never overwritten.
+The program does **not** submit payments, track submissions, prevent duplicate payments, or manage file creation
+numbers. Maintain unique file creation numbers and a submission ledger according to BMO's rules; independently review
+the recipient details, amounts, dates and total before each upload. Email and missing-bank flags in the CSV still
+require review. A generated EFT file is not proof of approval, acceptance, or payment.
+
 `decided` is the last stage: the application is **complete**, which makes it final for that term (any other
 application of the student for that term becomes `not_considered`). `sap_run.json` counts verified applications per
 stage. Databases from before the `stage` column get it filled in on the next run (`decided` if there is a decision,

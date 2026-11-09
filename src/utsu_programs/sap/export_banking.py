@@ -4,6 +4,7 @@
 """
 import argparse
 import csv
+import json
 import re
 import sqlite3
 import sys
@@ -12,6 +13,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 from utsu_core.verification import setup_reader
+from utsu_programs.sap.eft import create_eft
 from utsu_programs.sap.program import SPEC, build_row
 from utsu_std.csv_safe import open_csv, read_cell, write_rows
 from utsu_std.utils import absfile, normalize_uoft_email
@@ -45,10 +47,8 @@ def export_email(value: str) -> tuple[str, str, list[str]]:
     return normalized, f"{score:.3f}", flags
 
 
-def export_banking(reviews: Path, applications: Path, database: Path, output: Path) -> int:
-    """Write all review rows with their exact application details, or fail before writing."""
-    if output.resolve() in {p.resolve() for p in (reviews, applications, database)}:
-        raise ValueError("Output must be different from all input files")
+def join_banking(reviews: Path, applications: Path, database: Path) -> tuple[list[str], list[dict[str, str]]]:
+    """Join all review rows to their exact application details, or fail."""
     if not database.is_file():
         raise FileNotFoundError(f"Database not found: {database}")
 
@@ -133,10 +133,23 @@ def export_banking(reviews: Path, applications: Path, database: Path, output: Pa
         records = ", ".join(f"B{needed[u][0]:03d}-{needed[u][1]:02d}" for u in sorted(missing_uuids))
         raise ValueError(f"Applications not found in the form export for: {records}")
 
-    rows = [{**row, **found[slots[key][0]]} for key, row in review_rows]
+    return [*fields, *EXPORT_FIELDS], [{**row, **found[slots[key][0]]} for key, row in review_rows]
+
+
+def export_banking(reviews: Path, applications: Path, database: Path, output: Path) -> int:
+    """Write all review rows with their exact application details, or fail before writing."""
+    if output.resolve() in {p.resolve() for p in (reviews, applications, database)}:
+        raise ValueError("Output must be different from all input files")
+    fields, rows = join_banking(reviews, applications, database)
     output.parent.mkdir(parents=True, exist_ok=True)
-    write_rows(output, [*fields, *EXPORT_FIELDS], rows)
+    write_rows(output, fields, rows)
     return len(rows)
+
+
+def make_eft(rows: list[dict[str, str]], config_path: Path) -> bytes:
+    """Generate an EFT in memory; no output is written unless every payment validates."""
+    config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+    return create_eft(rows, config)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -145,13 +158,40 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("applications", type=Path, help="original SABP form export CSV")
     parser.add_argument("database", type=Path, help="SAP database used to assign the review batches")
     parser.add_argument("-o", "--output", type=Path, required=True, help="private output CSV")
+    parser.add_argument("--eft-output", type=Path, help="new private Standard 005 EFT file (never overwrites)")
+    parser.add_argument("--eft-config", type=Path, help="private JSON file with bank-specific EFT settings")
     args = parser.parse_args(argv)
     try:
-        count = export_banking(args.reviews, args.applications, args.database, args.output)
+        options = (args.eft_output, args.eft_config)
+        if any(options) and not all(options):
+            raise ValueError("--eft-output and --eft-config must be supplied together")
+        if not args.eft_output:
+            count = export_banking(args.reviews, args.applications, args.database, args.output)
+        else:
+            paths = [args.reviews, args.applications, args.database, args.eft_config, args.output, args.eft_output]
+            if len({p.resolve() for p in paths}) != len(paths):
+                raise ValueError("All inputs and outputs must be different files")
+            if args.eft_output.exists():
+                raise FileExistsError(f"EFT output already exists; choose a new path: {args.eft_output}")
+            fields, rows = join_banking(args.reviews, args.applications, args.database)
+            eft = make_eft(rows, args.eft_config)
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.eft_output.parent.mkdir(parents=True, exist_ok=True)
+            with args.eft_output.open("xb") as f:
+                try:
+                    f.write(eft)
+                    write_rows(args.output, fields, rows)
+                except (OSError, ValueError, csv.Error):
+                    f.close()
+                    args.eft_output.unlink()
+                    raise
+            count = len(rows)
     except (OSError, sqlite3.Error, ValueError, csv.Error) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     print(f"Exported {count} review record(s) to {args.output}")
+    if args.eft_output:
+        print(f"Created Standard 005 EFT file: {args.eft_output}")
     return 0
 
 
