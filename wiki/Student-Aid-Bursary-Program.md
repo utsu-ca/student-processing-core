@@ -172,11 +172,14 @@ python -m utsu_programs.sap.export_banking secrets\merged_reviews.csv secrets\sa
 
 The export preserves the review columns and adds the application UUID, first and last names, email, original email,
 institution name, institution number, transit number, account number and `export_flags`. The record ID resolves to
-one database application, whose UUID is recomputed from the original form row using the normal SABP rules. Missing or
-ambiguous matches, duplicate records and missing required columns stop the export without replacing the output. The
-database is read-only. Verify that the database really corresponds to the review sheets: the same record ID can be
-assigned to a different person in a different database. Applications absent from the form export cannot be recovered
-from the database alone.
+one database application, whose UUID is recomputed from the original form row using the normal SABP rules. A missing
+database record or original form row remains in the output with blank identity and banking details and
+`manual_reconciliation` plus `missing_database_record` or `missing_application` in `export_flags`. The application UUID
+is retained when known. Each missing record is also reported as a warning. Reconcile these records manually against the
+correct original data; the program does not infer a match. Ambiguous matches, duplicate records and missing required
+columns still stop the export without replacing the output. The database is read-only. Verify that the database really
+corresponds to the review sheets: the same record ID can be assigned to a different person in a different database.
+Applications absent from the form export cannot be recovered from the database alone.
 
 Valid emails are converted to `@mail.utoronto.ca`, including addresses on other domains; `email_changed` flags any
 change and `original_email` retains the source. **Confirm changed addresses before use:** converting a personal or
@@ -237,6 +240,8 @@ python -m utsu_programs.sap.export_banking secrets\approved_reviews.csv secrets\
 ```
 
 Both files contain sensitive information. The EFT is created only after all rows validate and is never overwritten.
+If any application requires manual reconciliation, the CSV is written with the flagged rows, the command exits with an
+error, and no EFT is created; no matched rows are paid in a partial EFT.
 The program does **not** submit payments, track submissions, prevent duplicate payments, or manage file creation
 numbers. Maintain unique file creation numbers and a submission ledger according to BMO's rules; independently review
 the recipient details, amounts, dates and total before each upload. Email and missing-bank flags in the CSV still

@@ -1,5 +1,6 @@
 import csv
 import json
+import sqlite3
 import subprocess
 import sys
 
@@ -139,3 +140,29 @@ def test_csv_write_failure_removes_new_eft(inputs, config, tmp_path, monkeypatch
          "--eft-output", str(eft), "--eft-config", str(config_path)])
     assert result == 1
     assert not eft.exists() and not output.exists()
+
+
+@pytest.mark.parametrize("reason", ["missing_database_record", "missing_application"])
+def test_missing_application_blocks_eft_but_writes_reconciliation_csv(inputs, config, tmp_path, reason):
+    reviews, applications, database, output, _, _ = inputs
+    with sqlite3.connect(database) as conn:
+        if reason == "missing_application":
+            conn.execute("INSERT INTO student_aid VALUES ('not-in-export', 1, 3)")
+    write_csv(reviews, ["record_id", "approved_amount"], [
+        {"record_id": "B001-02", "approved_amount": "123.45"},
+        {"record_id": "B001-03", "approved_amount": "10.00"},
+    ])
+    config_path = tmp_path / "eft_config.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    eft = tmp_path / "pay.eft"
+    result = subprocess.run(
+        [sys.executable, "-m", "utsu_programs.sap.export_banking", str(reviews), str(applications), str(database),
+         "-o", str(output), "--eft-output", str(eft), "--eft-config", str(config_path)],
+        capture_output=True, text=True)
+    assert result.returncode != 0 and "EFT blocked" in result.stderr and "B001-03" in result.stderr
+    assert not eft.exists()
+    with output.open(encoding="utf-8-sig", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 2 and rows[1]["export_flags"] == f"manual_reconciliation;{reason}"
+    with pytest.raises(ValueError, match="EFT blocked"):
+        export_banking.make_eft(rows, config_path)

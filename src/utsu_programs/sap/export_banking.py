@@ -5,6 +5,7 @@
 import argparse
 import csv
 import json
+import logging
 import re
 import sqlite3
 import sys
@@ -17,6 +18,8 @@ from utsu_programs.sap.eft import create_eft
 from utsu_programs.sap.program import SPEC, build_row
 from utsu_std.csv_safe import open_csv, read_cell, write_rows
 from utsu_std.utils import absfile, normalize_uoft_email
+
+logger = logging.getLogger(__name__)
 
 BANK_FIELDS = {
     "institution_name": "Name of Institution",
@@ -48,7 +51,7 @@ def export_email(value: str) -> tuple[str, str, list[str]]:
 
 
 def join_banking(reviews: Path, applications: Path, database: Path) -> tuple[list[str], list[dict[str, str]]]:
-    """Join all review rows to their exact application details, or fail."""
+    """Join review rows; flag missing matches for reconciliation and reject ambiguous matches."""
     if not database.is_file():
         raise FileNotFoundError(f"Database not found: {database}")
 
@@ -88,6 +91,8 @@ def join_banking(reviews: Path, applications: Path, database: Path) -> tuple[lis
     needed: dict[str, tuple[int, int]] = {}
     for key, _ in review_rows:
         matches = slots.get(key, [])
+        if not matches:
+            continue
         if len(matches) != 1:
             raise ValueError(f"Record B{key[0]:03d}-{key[1]:02d} has {len(matches)} database matches; expected one")
         if matches[0] in needed:
@@ -128,12 +133,19 @@ def join_banking(reviews: Path, applications: Path, database: Path) -> tuple[lis
             "export_flags": ";".join(flags),
         }
 
-    missing_uuids = needed.keys() - found.keys()
-    if missing_uuids:
-        records = ", ".join(f"B{needed[u][0]:03d}-{needed[u][1]:02d}" for u in sorted(missing_uuids))
-        raise ValueError(f"Applications not found in the form export for: {records}")
-
-    return [*fields, *EXPORT_FIELDS], [{**row, **found[slots[key][0]]} for key, row in review_rows]
+    rows = []
+    for key, row in review_rows:
+        matches = slots.get(key, [])
+        uuid = matches[0] if matches else ""
+        if not matches or uuid not in found:
+            reason = "missing_database_record" if not matches else "missing_application"
+            details = {field: "" for field in EXPORT_FIELDS}
+            details.update(application_uuid=uuid, export_flags=f"manual_reconciliation;{reason}")
+            logger.warning("Record %s requires manual reconciliation: %s", row["record_id"], reason)
+        else:
+            details = found[uuid]
+        rows.append({**row, **details})
+    return [*fields, *EXPORT_FIELDS], rows
 
 
 def export_banking(reviews: Path, applications: Path, database: Path, output: Path) -> int:
@@ -148,6 +160,8 @@ def export_banking(reviews: Path, applications: Path, database: Path, output: Pa
 
 def make_eft(rows: list[dict[str, str]], config_path: Path) -> bytes:
     """Generate an EFT in memory; no output is written unless every payment validates."""
+    if any("manual_reconciliation" in row["export_flags"].split(";") for row in rows):
+        raise ValueError("EFT blocked: applications require manual reconciliation")
     config = json.loads(config_path.read_text(encoding="utf-8-sig"))
     return create_eft(rows, config)
 
@@ -174,6 +188,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.eft_output.exists():
                 raise FileExistsError(f"EFT output already exists; choose a new path: {args.eft_output}")
             fields, rows = join_banking(args.reviews, args.applications, args.database)
+            unresolved = [row for row in rows if "manual_reconciliation" in row["export_flags"].split(";")]
+            if unresolved:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                write_rows(args.output, fields, rows)
+                raise ValueError(f"EFT blocked: {len(unresolved)} application(s) require manual reconciliation; "
+                                 f"review {args.output}")
             eft = make_eft(rows, args.eft_config)
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.eft_output.parent.mkdir(parents=True, exist_ok=True)

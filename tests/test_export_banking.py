@@ -102,21 +102,15 @@ def test_missing_bank_fields_are_flagged(inputs):
     assert row["export_flags"] == "invalid_email;missing_bank_information"
 
 
-@pytest.mark.parametrize("failure", ["unknown_record", "ambiguous_record", "missing_application", "duplicate_application",
+@pytest.mark.parametrize("failure", ["ambiguous_record", "duplicate_application",
                                      "duplicate_review", "missing_bank_column"])
 def test_errors_never_replace_output(inputs, failure):
     reviews, applications, database, output, source, fields = inputs
     output.parent.mkdir()
     output.write_text("unchanged", encoding="utf-8")
-    if failure == "unknown_record":
-        with sqlite3.connect(database) as conn:
-            conn.execute("DELETE FROM student_aid")
-    elif failure == "ambiguous_record":
+    if failure == "ambiguous_record":
         with sqlite3.connect(database) as conn:
             conn.execute("INSERT INTO student_aid VALUES ('another', 1, 2)")
-    elif failure == "missing_application":
-        with sqlite3.connect(database) as conn:
-            conn.execute("UPDATE student_aid SET uuid = 'not-in-export'")
     elif failure == "duplicate_application":
         write_csv(applications, fields, [source, source])
     elif failure == "duplicate_review":
@@ -128,6 +122,28 @@ def test_errors_never_replace_output(inputs, failure):
     with pytest.raises(ValueError):
         export_banking(reviews, applications, database, output)
     assert output.read_text(encoding="utf-8") == "unchanged"
+
+
+def test_missing_records_are_retained_and_flagged(inputs, caplog):
+    reviews, applications, database, output, _, _ = inputs
+    with sqlite3.connect(database) as conn:
+        conn.execute("INSERT INTO student_aid VALUES ('missing-application-uuid', 1, 3)")
+    write_csv(reviews, ["record_id", "mean_score", "notes"], [
+        {"record_id": "B001-02", "mean_score": "3", "notes": "matched"},
+        {"record_id": "B001-03", "mean_score": "2", "notes": "missing application"},
+        {"record_id": "B001-04", "mean_score": "1", "notes": "missing database record"},
+    ])
+    assert export_banking(reviews, applications, database, output) == 3
+    with output.open(encoding="utf-8-sig", newline="") as f:
+        matched, missing_app, missing_db = list(csv.DictReader(f))
+    assert matched["first_name"] == "Ann"
+    assert missing_app["application_uuid"] == "missing-application-uuid"
+    assert missing_app["export_flags"] == "manual_reconciliation;missing_application"
+    assert missing_db["application_uuid"] == ""
+    assert missing_db["export_flags"] == "manual_reconciliation;missing_database_record"
+    for row in (missing_app, missing_db):
+        assert all(not row[field] for field in ("first_name", "email", *BANK_FIELDS))
+    assert "B001-03" in caplog.text and "B001-04" in caplog.text
 
 
 def test_refuses_to_overwrite_an_input(inputs):
