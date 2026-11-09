@@ -1,0 +1,34 @@
+# Terraform Variables Configuration
+# Copy to terraform.tfvars and fill in your values
+
+# Which clouds to deploy to: "azure", "gcp", "aws", or any combination
+deployment_targets = ["azure", "gcp", "aws"]
+
+# Docker image tag (typically git commit SHA or version number)
+image_tag = "v1.0.0"
+
+# Environment name: dev, staging, prod
+environment = "dev"
+
+# Primary region (varies by cloud)
+region = "us-east-1"
+
+# Container resources
+cpu    = "0.5"   # 0.5 vCPU
+memory = "1"     # 1 GB RAM
+
+# ===== AZURE CONFIGURATION =====
+# Get these from Azure Portal
+
+azure_subscription_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+azure_resource_group  = "utsu-portal-rg"
+
+# ===== GCP CONFIGURATION =====
+# Get these from Google Cloud Console
+
+gcp_project = "utsu-portal-project"
+
+# ===== AWS CONFIGURATION =====
+# Get these from AWS Console
+
+aws_account_id = "123456789012"

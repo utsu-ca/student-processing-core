@@ -1,0 +1,121 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: portal-with-reverse-proxy
+  namespace: utsu-portal
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "8m"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - portal.example.org
+      secretName: portal-tls
+  rules:
+    - host: portal.example.org
+      http:
+        paths:
+          # Auth service routes (exposed to users)
+          - path: /api/auth
+            pathType: Prefix
+            backend:
+              service:
+                name: authsvc
+                port:
+                  number: 8080
+          - path: /api/me
+            pathType: Exact
+            backend:
+              service:
+                name: authsvc
+                port:
+                  number: 8080
+          - path: /api/verification
+            pathType: Prefix
+            backend:
+              service:
+                name: authsvc
+                port:
+                  number: 8080
+          - path: /api/recovery
+            pathType: Prefix
+            backend:
+              service:
+                name: authsvc
+                port:
+                  number: 8080
+          - path: /api/rbac
+            pathType: Prefix
+            backend:
+              service:
+                name: authsvc
+                port:
+                  number: 8080
+          - path: /api/admin/verifications
+            pathType: Prefix
+            backend:
+              service:
+                name: authsvc
+                port:
+                  number: 8080
+          - path: /api/admin/auth-audit
+            pathType: Prefix
+            backend:
+              service:
+                name: authsvc
+                port:
+                  number: 8080
+          
+          # Main portal routes
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: portal
+                port:
+                  number: 8080
+---
+# NetworkPolicy: isolate internal communication
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: microservices-isolation
+  namespace: utsu-portal
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow ingress controller traffic
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+    # Allow inter-pod communication within namespace
+    - from:
+        - podSelector: {}
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow egress within namespace
+    - to:
+        - podSelector: {}
+    # Allow external SMTP
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 25
+        - protocol: TCP
+          port: 465
+        - protocol: TCP
+          port: 587

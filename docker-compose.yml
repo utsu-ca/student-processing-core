@@ -1,0 +1,176 @@
+version: '3.8'
+
+services:
+  # PostgreSQL database (shared between services or separate for isolation)
+  postgres-auth:
+    image: postgres:15-alpine
+    container_name: postgres-auth
+    environment:
+      POSTGRES_DB: authdb
+      POSTGRES_USER: authuser
+      POSTGRES_PASSWORD: authpass
+    ports:
+      - "5432:5432"
+    volumes:
+      - auth-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authuser -d authdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  postgres-mail:
+    image: postgres:15-alpine
+    container_name: postgres-mail
+    environment:
+      POSTGRES_DB: maildb
+      POSTGRES_USER: mailuser
+      POSTGRES_PASSWORD: mailpass
+    ports:
+      - "5433:5432"
+    volumes:
+      - mail-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mailuser -d maildb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis cache (shared)
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Reverse proxy / Load balancer
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-reverse-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - portal
+      - authsvc
+      - mailsvc
+    networks:
+      - utsu-network
+
+  # Auth Microservice
+  authsvc:
+    build:
+      context: .
+      dockerfile: Dockerfile.microservices
+      args:
+        SERVICE: authsvc
+    container_name: authsvc
+    environment:
+      PORTAL_SERVICE_TOKEN: "your-secret-token-minimum-32-characters-long"
+      PORTAL_MAIL_ENDPOINT: "http://mailsvc:8080"
+      DATABASE_URL: "postgresql://authuser:authpass@postgres-auth:5432/authdb"
+      REDIS_URL: "redis://redis:6379"
+      PORTAL_AUDIT_DB_ACCESS: "true"
+    ports:
+      - "8001:8080"
+    depends_on:
+      postgres-auth:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - utsu-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/docs"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # Email Microservice
+  mailsvc:
+    build:
+      context: .
+      dockerfile: Dockerfile.microservices
+      args:
+        SERVICE: mailsvc
+    container_name: mailsvc
+    environment:
+      PORTAL_SERVICE_TOKEN: "your-secret-token-minimum-32-characters-long"
+      PORTAL_SMTP_URL: "smtp://localhost:1025"  # Use Mailhog for local testing
+      PORTAL_MAIL_FROM: "noreply@example.local"
+      DATABASE_URL: "postgresql://mailuser:mailpass@postgres-mail:5433/maildb"
+    ports:
+      - "8002:8080"
+    depends_on:
+      postgres-mail:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+    networks:
+      - utsu-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/docs"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # Portal Service
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile.microservices
+      args:
+        SERVICE: portal
+    container_name: portal
+    environment:
+      PORTAL_SERVICE_TOKEN: "your-secret-token-minimum-32-characters-long"
+      PORTAL_AUTH_ENDPOINT: "http://authsvc:8080"
+      PORTAL_MAIL_ENDPOINT: "http://mailsvc:8080"
+      DATABASE_URL: "postgresql://authuser:authpass@postgres-auth:5432/authdb"
+      REDIS_URL: "redis://redis:6379"
+    ports:
+      - "8000:8080"
+    depends_on:
+      authsvc:
+        condition: service_healthy
+      mailsvc:
+        condition: service_healthy
+    networks:
+      - utsu-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/docs"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # Mailhog: Local SMTP testing (catches emails without sending)
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: mailhog
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI (http://localhost:8025)
+    networks:
+      - utsu-network
+
+volumes:
+  auth-db-data:
+  mail-db-data:
+  redis-data:
+
+networks:
+  utsu-network:
+    driver: bridge

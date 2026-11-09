@@ -1,0 +1,59 @@
+# Multi-stage Dockerfile for all microservices
+# Supports: portal, authsvc, mailsvc
+# Usage:
+#   docker build --build-arg SERVICE=portal -t portal:1.0 .
+#   docker build --build-arg SERVICE=authsvc -t authsvc:1.0 .
+#   docker build --build-arg SERVICE=mailsvc -t mailsvc:1.0 .
+
+FROM python:3.11-slim as base
+
+WORKDIR /app
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml pyproject.lock* ./
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -e .
+
+# Runtime stage
+FROM python:3.11-slim
+
+ARG SERVICE=portal
+ENV SERVICE=${SERVICE}
+
+WORKDIR /app
+
+# Copy Python dependencies
+RUN apt-get update && apt-get install -y \
+    postgresql-client \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=base /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=base /usr/local/bin /usr/local/bin
+
+# Copy source code
+COPY src ./src
+COPY templates ./templates
+COPY pyproject.toml ./
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8080/docs || exit 1
+
+# Expose port
+EXPOSE 8080
+
+# Run appropriate service
+CMD case ${SERVICE} in \
+        authsvc) \
+            uvicorn utsu_portal.authsvc:create_auth_app --host 0.0.0.0 --port 8080 ;; \
+        mailsvc) \
+            uvicorn utsu_portal.mailsvc:create_mail_app --host 0.0.0.0 --port 8080 ;; \
+        portal) \
+            uvicorn utsu_portal.app:app --host 0.0.0.0 --port 8080 ;; \
+        *) \
+            echo "Unknown service: ${SERVICE}" && exit 1 ;; \
+    esac
