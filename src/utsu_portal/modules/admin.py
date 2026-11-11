@@ -20,7 +20,7 @@ class AdminModule:
     def router(self, ctx: Context) -> APIRouter:
         r = APIRouter(prefix="/api/admin")
         S = ctx.store
-        admin = ctx.require_admin()
+        admin = ctx.require_role("verifier")
 
         @r.get("/verifications")
         def pending(_: dict = admin):

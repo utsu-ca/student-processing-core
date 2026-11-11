@@ -13,7 +13,7 @@ from collections import defaultdict
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
-from ..context import Context
+from ..context import Context, roles_of
 from ..security import clean_text
 
 name = "clubs"
@@ -88,7 +88,8 @@ class ClubsModule:
     def router(self, ctx: Context) -> APIRouter:
         r = APIRouter(prefix="/api")
         S, cfg = ctx.store, ctx.settings
-        verified, admin = ctx.require_verified(), ctx.require_admin()
+        verified, admin = ctx.require_verified(), ctx.require_role("clubs")
+        finance = ctx.require_role("finance")
 
         def club(cid: str) -> dict:
             c = S.get("clubs", cid)
@@ -127,7 +128,7 @@ class ClubsModule:
         @r.get("/clubs/{cid}")
         def get_club(cid: str, a: dict = ctx.require_user()):
             c = club(cid)
-            if a["uuid"] not in c["members"] and a.get("role") != "admin":
+            if a["uuid"] not in c["members"] and "admin" not in roles_of(a):
                 raise HTTPException(403, "not permitted for this club")
             return {**c, "balance_cents": balance(cid)}
 
@@ -194,7 +195,7 @@ class ClubsModule:
         @r.get("/clubs/{cid}/receipts/{rid}")
         def get_receipt(cid: str, rid: str, a: dict = ctx.require_user()):
             c, rc = club(cid), S.get("receipts", rid)
-            if a["uuid"] not in c["members"] and a.get("role") != "admin":
+            if a["uuid"] not in c["members"] and "admin" not in roles_of(a):
                 raise HTTPException(403, "not permitted for this club")
             if not rc or rc["club_id"] != cid:
                 raise HTTPException(404, "unknown receipt")
@@ -248,16 +249,16 @@ class ClubsModule:
         @r.get("/clubs/{cid}/transactions")
         def list_tx(cid: str, a: dict = ctx.require_user()):
             c = club(cid)
-            if a["uuid"] not in c["members"] and a.get("role") != "admin":
+            if a["uuid"] not in c["members"] and "admin" not in roles_of(a):
                 raise HTTPException(403, "not permitted for this club")
             return sorted(S.list("transactions", club_id=cid), key=lambda t: (t["date"], t["created_at"]))
 
         @r.get("/admin/transactions")
-        def pending_tx(status: str = "pending", _: dict = admin):
+        def pending_tx(status: str = "pending", _: dict = finance):
             return S.list("transactions", status=status)
 
         @r.post("/admin/transactions/{tid}/decision")
-        def decide_tx(tid: str, b: Decision, a: dict = admin):
+        def decide_tx(tid: str, b: Decision, a: dict = finance):
             def vote(t):
                 if not t or t["status"] != "pending":
                     raise HTTPException(404, "no pending transaction")
@@ -275,7 +276,7 @@ class ClubsModule:
             return {"status": state, "approvals": sum(x["approve"] for x in t["approvals"]), "required": t["required_approvals"]}
 
         @r.post("/admin/clubs/{cid}/grants", status_code=201)
-        def grant(cid: str, b: GrantIn, a: dict = admin):
+        def grant(cid: str, b: GrantIn, a: dict = finance):
             c = club(cid)
             if c["status"] != "approved":
                 raise HTTPException(409, "club is not approved")
@@ -292,7 +293,7 @@ class ClubsModule:
         def summary(cid: str, a: dict = ctx.require_user()):
             """Tax summary: tax paid on approved expenses (input tax credit eligible) and tax collected on income."""
             c = club(cid)
-            if a["uuid"] not in c["members"] and a.get("role") != "admin":
+            if a["uuid"] not in c["members"] and "admin" not in roles_of(a):
                 raise HTTPException(403, "not permitted for this club")
             totals = defaultdict(int)
             by_cat: dict[str, int] = defaultdict(int)

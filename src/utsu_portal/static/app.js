@@ -20,7 +20,11 @@
     const link = (t, f) => { const b = el("button", {}, t); b.onclick = f; nav.append(b); };
     if (!token) return link("Sign in", authView);
     link("Forms", formsView); link("AGM", agmView); link("My applications", statusView); link("Account", accountView);
-    if (me && me.role === "admin") { link("Admin: forms", adminForms); link("Admin: verifications", adminVerifications); link("Admin: AGM verifications", adminAgmChecks); link("AGM check-in", () => { location.href = "/static/checkin.html"; }); }
+    const has = r => me && (me.roles || []).some(x => x === "admin" || x === r);
+    if (has("forms_editor")) link("Admin: forms", adminForms);
+    if (has("verifier")) { link("Admin: verifications", adminVerifications); link("Admin: AGM verifications", adminAgmChecks); }
+    if (me && (me.roles || []).includes("admin")) link("Admin: roles", adminRoles);
+    if (has("checkin")) link("AGM check-in", () => { location.href = "/static/checkin.html"; });
     link("Sign out", () => { token = null; me = null; sessionStorage.removeItem("token"); setNav(); authView(); });
   }
 
@@ -151,6 +155,16 @@
       const cc = card(el("strong", {}, `${s.applicant.first_name} ${s.applicant.last_name} (${s.applicant.preferred_name}) ***${s.applicant.student_number}`), el("pre", {}, JSON.stringify(s.data, null, 2)), sel, note, b);
       b.onclick = act(cc, async () => { await api(`/admin/submissions/${id}/${s.uuid}/status`, { method: "POST", body: { status: sel.value, note: note.value } }); cc.append(msg("ok status", "updated")); });
     }
+  }
+
+  async function adminRoles() {
+    main.replaceChildren(); const cat = await api("/admin/roles"), holders = await api("/admin/roles/holders");
+    const [l1, uname] = field("Username of a verified account", { autocomplete: "off" });
+    const boxes = Object.keys(cat).map(r => { const c = el("input", { type: "checkbox" }); return [r, c, el("label", { className: "opt", title: cat[r] }, c, ` ${r} — ${cat[r]}`)]; });
+    const save = el("button", { className: "primary" }, "Set roles");
+    const form = card(el("h3", {}, "Assign roles"), l1, uname, ...boxes.map(b => b[2]), save);
+    save.onclick = act(form, async () => { await api("/admin/roles", { method: "PUT", body: { username: uname.value, roles: boxes.filter(b => b[1].checked).map(b => b[0]) } }); adminRoles(); });
+    for (const h of holders) card(el("strong", {}, h.preferred_name || h.uuid), el("p", {}, h.roles.join(", ")), el("p", { className: "help" }, h.uuid));
   }
 
   async function adminVerifications() {

@@ -26,13 +26,14 @@ from .modules.agm import AgmModule
 from .modules.agm_verify import AgmVerifyModule
 from .modules.auth import AuthModule
 from .modules.clubs import ClubsModule
+from .modules.roles import RolesModule
 from .modules.sso import SSOModule
 from .modules.forms import FormsModule
 from .settings import FORMS_DIR, Settings
 from .store import ACCESS, AccessLog, AuditedStore, Store, open_store
 
 STATIC = Path(__file__).parent / "static"
-CORE_MODULES = (SSOModule(), AuthModule(), AgmVerifyModule(), AgmModule(), FormsModule(), AdminModule(), ClubsModule(), AuditModule())
+CORE_MODULES = (SSOModule(), AuthModule(), AgmVerifyModule(), AgmModule(), FormsModule(), AdminModule(), ClubsModule(), AuditModule(), RolesModule())
 REMOTE_MODULES = (SSOModule(), AgmVerifyModule(), AgmModule(), FormsModule(), ClubsModule(), AuditModule())  # no auth/admin-verification
 RATE_LIMITED = ("/api/auth/", "/api/recovery", "/sso/token", "/sso/authorize")
 log = logging.getLogger("utsu_portal")

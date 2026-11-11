@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from .. import security
-from ..context import Context
+from ..context import Context, roles_of
 from ..security import clean_text
 
 name = "auth"
@@ -127,7 +127,7 @@ class AuthModule:
             S.put("users", uid, {"uuid": uid, "email": b.email.lower(), "preferred_name": b.preferred_name or b.first_name,
                                  "first_name": b.first_name, "last_name": b.last_name,
                                  "student_number": security.truncate_student_number(b.student_number)})
-            S.put("accounts", uid, {"uuid": uid, "status": "pending_email", "role": "admin" if admin else "applicant",
+            S.put("accounts", uid, {"uuid": uid, "status": "pending_email", "role": "admin" if admin else "applicant", "roles": ["admin"] if admin else [],
                                     "email_verified": False, "sid_uuid": sid, "email_key": ekey})
             ctx.send_otp("email", uid, b.email)
             ctx.audit.record(uid, "account.registered", f"user:{uid}", None, S.get("users", uid), {"role": "admin" if admin else "applicant"})
@@ -177,7 +177,7 @@ class AuthModule:
         @r.get("/me")
         def me(acct: dict = user_dep):
             u = S.get("users", acct["uuid"])
-            return {"user": u, "status": acct["status"], "role": acct["role"]}
+            return {"user": u, "status": acct["status"], "role": acct["role"], "roles": sorted(roles_of(acct))}
 
         @r.patch("/me")
         def update_me(b: Preferred, acct: dict = user_dep):
