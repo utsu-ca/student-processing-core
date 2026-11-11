@@ -136,7 +136,7 @@
       s.fields.push(nf); ta.value = (await api("/admin/forms/convert", { method: "POST", body: { schema: s } })).yaml; preview();
     });
     const saveB = el("button", { className: "primary" }, "Save draft"); saveB.onclick = act(c, async () => { const r = await api(`/admin/forms/${id}/draft`, { method: "PUT", body: { yaml: ta.value, base_rev: rev } }); rev = r.rev; status.className = "ok"; status.textContent = "saved rev " + rev; });
-    const pub = el("button", { className: "primary" }, "Publish"), unp = el("button", { className: "primary" }, "Unpublish");
+    const pub = el("button", { className: "primary" }, "Publish"), unp = el("button", { className: "secondary" }, "Unpublish");
     pub.onclick = act(c, async () => { await api(`/admin/forms/${id}/publish`, { method: "POST" }); status.textContent = "published"; });
     unp.onclick = act(c, async () => { await api(`/admin/forms/${id}/unpublish`, { method: "POST" }); status.textContent = "unpublished"; });
     c.append(add, addB, saveB, pub, unp);
@@ -158,8 +158,8 @@
     if (!list.length) card(el("p", {}, "Nothing pending."));
     for (const v of list) {
       const c = card(el("strong", {}, `${v.kind}: ${v.first_name} ${v.last_name}`), el("p", {}, "Divisions: " + v.division_codes.join(", ")), el("pre", {}, JSON.stringify(v.changes)));
-      const show = el("button", { className: "primary" }, "Show scans"); show.onclick = act(c, async () => { const m = await api(`/admin/verifications/${v.id}/media`); c.append(el("div", { className: "row" }, el("img", { className: "shot", src: m.face }), el("img", { className: "shot", src: m.id_card }))); });
-      const yes = el("button", { className: "primary" }, "Approve"), no = el("button", { className: "primary" }, "Reject");
+      const show = el("button", { className: "secondary" }, "Show scans"); show.onclick = act(c, async () => { const m = await api(`/admin/verifications/${v.id}/media`); c.append(el("div", { className: "row" }, el("img", { className: "shot", src: m.face }), el("img", { className: "shot", src: m.id_card }))); });
+      const yes = el("button", { className: "primary" }, "Approve"), no = el("button", { className: "danger" }, "Reject");
       yes.onclick = act(c, async () => { await api(`/admin/verifications/${v.id}/decision`, { method: "POST", body: { approve: true } }); adminVerifications(); });
       no.onclick = act(c, async () => { await api(`/admin/verifications/${v.id}/decision`, { method: "POST", body: { approve: false } }); adminVerifications(); });
       c.append(show, yes, no);
@@ -199,7 +199,7 @@
     if (!list.length) card(el("p", {}, "Nothing pending."));
     for (const v of list) {
       const c = card(el("strong", {}, `${v.first_name} ${v.last_name} ***${v.student_number}`));
-      const show = el("button", { className: "primary" }, "Show scans"), yes = el("button", { className: "primary" }, "Approve"), no = el("button", { className: "primary" }, "Reject");
+      const show = el("button", { className: "secondary" }, "Show scans"), yes = el("button", { className: "primary" }, "Approve"), no = el("button", { className: "danger" }, "Reject");
       show.onclick = act(c, async () => { const m = await api(`/admin/agm/verifications/${v.id}/media`); c.append(el("div", { className: "row" }, el("img", { className: "shot", src: m.face }), el("img", { className: "shot", src: m.id_card }))); });
       yes.onclick = act(c, async () => { await api(`/admin/agm/verifications/${v.id}/decision`, { method: "POST", body: { approve: true } }); adminAgmChecks(); });
       no.onclick = act(c, async () => { await api(`/admin/agm/verifications/${v.id}/decision`, { method: "POST", body: { approve: false } }); adminAgmChecks(); });

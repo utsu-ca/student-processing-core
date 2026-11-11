@@ -14,4 +14,4 @@ config.json
 __pycache__
 *.egg-info
 *.log
-testing/output/
+testing/output/web/.tailwindcss-*

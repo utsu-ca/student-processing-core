@@ -73,3 +73,9 @@ dependencies (`require_user`, `require_verified`, `require_admin`).
 - **Check-in screen** (`/static/checkin.html`, admins only): scan the QR (camera where `BarcodeDetector` exists, or a
   keyboard-wedge scanner / paste) to show the attendee's name, pronouns (an optional `pronouns` field on the RSVP form,
   v2, since the user record does not store them) and a "Checked in" message; repeat scans are flagged as duplicates.
+
+## Form patterns (RE2) and styling (Tailwind)
+
+- A field's `pattern` is compiled with **RE2** (`google-re2`, linear time, no backreferences/lookarounds) when a form is saved and when a submission is checked. Because the browser re-runs the pattern with JavaScript's backtracking `RegExp`, patterns must also be JS-safe: only plain `(?:` groups (no `(?P<n>)`, `(?i)` flags), **no quantified groups** (`(a|b)+`, `(ab)*`), repeat counts ≤ 256, ≤ 200 characters. Use character classes and bounded repeats instead, e.g. `[A-Z]{2}\d{4}`. Existing forms with non-conforming patterns are rejected on their next save.
+- Styling uses Tailwind CSS v4. The CSP forbids CDNs and inline styles, so `static/app.css` is built from `web/app.src.css` with the standalone CLI (no Node): `web/build-css.sh`. The built file is committed; rebuild after changing the source or classes used in `static/*.js|html`. Components: `.card`, `button.primary|secondary|danger`, `.err`, `.ok`, `.badge`, `.row`, `.banner-ok|warn` (check-in result).
+- A separate Node front-end was considered and deferred: same-origin serving keeps the token/CSP/SSO model simple.
