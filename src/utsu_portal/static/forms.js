@@ -12,6 +12,10 @@
     const v = data[c.field];
     return Array.isArray(v) ? v.includes(c.equals) : v === c.equals;
   }
+  // Patterns are vetted server-side (RE2 + a JS-safe subset) before publishing; the try/catch only guards malformed input.
+  function matchesPattern(p, v) {
+    try { return new RegExp("^(?:" + p + ")$").test(v.slice(0, 5000)); } catch (e) { return false; }
+  }
   // returns {data, errors}
   function validate(schema, raw) {
     const data = {}, errors = {};
@@ -28,7 +32,7 @@
         else if (t === "date" && !/^\d{4}-\d{2}-\d{2}$/.test(v)) errors[f.id] = "date must be YYYY-MM-DD";
         else if ((t === "text" || t === "textarea") && f.min != null && v.length < f.min) errors[f.id] = "at least " + f.min + " characters";
         else if ((t === "text" || t === "textarea") && f.max != null && v.length > f.max) errors[f.id] = "at most " + f.max + " characters";
-        else if (f.pattern && !new RegExp("^(?:" + f.pattern + ")$").test(v)) errors[f.id] = "invalid format";
+        else if (f.pattern && !matchesPattern(f.pattern, v)) errors[f.id] = "invalid format";
       } else if (t === "number") {
         v = Number(v);
         if (!Number.isFinite(v)) errors[f.id] = "must be a number";

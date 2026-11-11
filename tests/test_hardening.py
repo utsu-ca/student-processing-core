@@ -75,12 +75,20 @@ def test_recovery_limited_per_username_and_uniform():
     assert c.post("/api/recovery/start", json={"username": "ada", "student_number_trunc": "7890"}).status_code == 429
 
 
-@pytest.mark.parametrize("p", [r"(a+)+$", r"(a|aa)+", r"(a*)*", r"(.*)\1", r"(?=x)a", r"a{1,100000}", r"(\d+)+x", "x" * 201])
+@pytest.mark.parametrize("p", [r"(a+)+$", r"(a|aa)+", r"(a*)*", r"(.*)\1", r"(?=x)a", r"a{1,100000}", r"(\d+)+x", r"(?P<n>a)", r"(?i)a", "x" * 201, r"(a)*", r"a{1,300}"])
 def test_dangerous_patterns_rejected(p):
     with pytest.raises((ValueError, Exception)):
         safe_pattern(p)
 
 
-@pytest.mark.parametrize("p", [r"[A-Z]{2}\d{4}", r"\d{3}-\d{4}", r"[a-z]+@utoronto\.ca", r"(ab)c?"])
+@pytest.mark.parametrize("p", [r"[A-Z]{2}\d{4}", r"\d{3}-\d{4}", r"[a-z]+@utoronto\.ca", r"(ab)c?", r"(?:ab|cd)x", r"[)*+]{2}", r"\(\)*"])
 def test_ordinary_patterns_ok(p):
     assert safe_pattern(p).pattern == p
+
+
+def test_pattern_is_checked_by_re2_on_submit_and_publish():
+    from utsu_portal import formdef
+    assert type(safe_pattern(r"\d+")).__module__.startswith("re2")
+    base = {"id": "t", "title": "T", "version": 1, "fields": [{"id": "a", "type": "text", "label": "A", "pattern": r"(a+)+$"}]}
+    with pytest.raises(formdef.FormError, match="pattern"):
+        formdef.validate_schema(base)
