@@ -20,7 +20,11 @@
     const link = (t, f) => { const b = el("button", {}, t); b.onclick = f; nav.append(b); };
     if (!token) return link("Sign in", authView);
     link("Forms", formsView); link("AGM", agmView); link("My applications", statusView); link("Account", accountView);
-    if (me && me.role === "admin") { link("Admin: forms", adminForms); link("Admin: verifications", adminVerifications); link("Admin: AGM verifications", adminAgmChecks); link("AGM check-in", () => { location.href = "/static/checkin.html"; }); }
+    const has = r => me && (me.roles || []).some(x => x === "admin" || x === r);
+    if (has("forms_editor")) link("Admin: forms", adminForms);
+    if (has("verifier")) { link("Admin: verifications", adminVerifications); link("Admin: AGM verifications", adminAgmChecks); }
+    if (me && (me.roles || []).includes("admin")) link("Admin: roles", adminRoles);
+    if (has("checkin")) link("AGM check-in", () => { location.href = "/static/checkin.html"; });
     link("Sign out", () => { token = null; me = null; sessionStorage.removeItem("token"); setNav(); authView(); });
   }
 
@@ -136,7 +140,7 @@
       s.fields.push(nf); ta.value = (await api("/admin/forms/convert", { method: "POST", body: { schema: s } })).yaml; preview();
     });
     const saveB = el("button", { className: "primary" }, "Save draft"); saveB.onclick = act(c, async () => { const r = await api(`/admin/forms/${id}/draft`, { method: "PUT", body: { yaml: ta.value, base_rev: rev } }); rev = r.rev; status.className = "ok"; status.textContent = "saved rev " + rev; });
-    const pub = el("button", { className: "primary" }, "Publish"), unp = el("button", { className: "primary" }, "Unpublish");
+    const pub = el("button", { className: "primary" }, "Publish"), unp = el("button", { className: "secondary" }, "Unpublish");
     pub.onclick = act(c, async () => { await api(`/admin/forms/${id}/publish`, { method: "POST" }); status.textContent = "published"; });
     unp.onclick = act(c, async () => { await api(`/admin/forms/${id}/unpublish`, { method: "POST" }); status.textContent = "unpublished"; });
     c.append(add, addB, saveB, pub, unp);
@@ -153,13 +157,23 @@
     }
   }
 
+  async function adminRoles() {
+    main.replaceChildren(); const cat = await api("/admin/roles"), holders = await api("/admin/roles/holders");
+    const [l1, uname] = field("Username of a verified account", { autocomplete: "off" });
+    const boxes = Object.keys(cat).map(r => { const c = el("input", { type: "checkbox" }); return [r, c, el("label", { className: "opt", title: cat[r] }, c, ` ${r} — ${cat[r]}`)]; });
+    const save = el("button", { className: "primary" }, "Set roles");
+    const form = card(el("h3", {}, "Assign roles"), l1, uname, ...boxes.map(b => b[2]), save);
+    save.onclick = act(form, async () => { await api("/admin/roles", { method: "PUT", body: { username: uname.value, roles: boxes.filter(b => b[1].checked).map(b => b[0]) } }); adminRoles(); });
+    for (const h of holders) card(el("strong", {}, h.preferred_name || h.uuid), el("p", {}, h.roles.join(", ")), el("p", { className: "help" }, h.uuid));
+  }
+
   async function adminVerifications() {
     main.replaceChildren(); const list = await api("/admin/verifications");
     if (!list.length) card(el("p", {}, "Nothing pending."));
     for (const v of list) {
       const c = card(el("strong", {}, `${v.kind}: ${v.first_name} ${v.last_name}`), el("p", {}, "Divisions: " + v.division_codes.join(", ")), el("pre", {}, JSON.stringify(v.changes)));
-      const show = el("button", { className: "primary" }, "Show scans"); show.onclick = act(c, async () => { const m = await api(`/admin/verifications/${v.id}/media`); c.append(el("div", { className: "row" }, el("img", { className: "shot", src: m.face }), el("img", { className: "shot", src: m.id_card }))); });
-      const yes = el("button", { className: "primary" }, "Approve"), no = el("button", { className: "primary" }, "Reject");
+      const show = el("button", { className: "secondary" }, "Show scans"); show.onclick = act(c, async () => { const m = await api(`/admin/verifications/${v.id}/media`); c.append(el("div", { className: "row" }, el("img", { className: "shot", src: m.face }), el("img", { className: "shot", src: m.id_card }))); });
+      const yes = el("button", { className: "primary" }, "Approve"), no = el("button", { className: "danger" }, "Reject");
       yes.onclick = act(c, async () => { await api(`/admin/verifications/${v.id}/decision`, { method: "POST", body: { approve: true } }); adminVerifications(); });
       no.onclick = act(c, async () => { await api(`/admin/verifications/${v.id}/decision`, { method: "POST", body: { approve: false } }); adminVerifications(); });
       c.append(show, yes, no);
@@ -199,7 +213,7 @@
     if (!list.length) card(el("p", {}, "Nothing pending."));
     for (const v of list) {
       const c = card(el("strong", {}, `${v.first_name} ${v.last_name} ***${v.student_number}`));
-      const show = el("button", { className: "primary" }, "Show scans"), yes = el("button", { className: "primary" }, "Approve"), no = el("button", { className: "primary" }, "Reject");
+      const show = el("button", { className: "secondary" }, "Show scans"), yes = el("button", { className: "primary" }, "Approve"), no = el("button", { className: "danger" }, "Reject");
       show.onclick = act(c, async () => { const m = await api(`/admin/agm/verifications/${v.id}/media`); c.append(el("div", { className: "row" }, el("img", { className: "shot", src: m.face }), el("img", { className: "shot", src: m.id_card }))); });
       yes.onclick = act(c, async () => { await api(`/admin/agm/verifications/${v.id}/decision`, { method: "POST", body: { approve: true } }); adminAgmChecks(); });
       no.onclick = act(c, async () => { await api(`/admin/agm/verifications/${v.id}/decision`, { method: "POST", body: { approve: false } }); adminAgmChecks(); });

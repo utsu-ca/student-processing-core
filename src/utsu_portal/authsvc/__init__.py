@@ -16,6 +16,7 @@ from ..mailer import Mailer, mailer_from_env
 from ..modules.admin import AdminModule
 from ..modules.audit import AuditModule
 from ..modules.auth import AuthModule
+from ..modules.roles import RolesModule
 from ..settings import Settings
 from ..store import Store
 from .rbac import RBACModule
@@ -30,11 +31,12 @@ class InternalModule:
 
     def router(self, ctx: Context) -> APIRouter:
         r = APIRouter(prefix="/internal", include_in_schema=False)
-        want = ctx.settings.service_token
+        wants = [t.strip() for t in (ctx.settings.service_token or "").split(",") if t.strip()]  # several tokens = rotation overlap
 
         def guard(authorization: str | None) -> None:
             got = (authorization or "").removeprefix("Bearer ").strip()
-            if not want or not got or not hmac.compare_digest(got.encode(), want.encode()):
+            ok = [hmac.compare_digest(got.encode(), w.encode()) for w in wants]  # no short-circuit: constant work per token
+            if not got or not any(ok):
                 raise HTTPException(404)  # indistinguishable from a missing route when unauthenticated
 
         def view(uid: str):
@@ -42,7 +44,7 @@ class InternalModule:
             if not a or not u:
                 return None
             # minimal projection: no hashes, no email/student-id lookup keys
-            return {"account": {k: a.get(k) for k in ("uuid", "status", "role", "email_verified")}, "user": u}
+            return {"account": {k: a.get(k) for k in ("uuid", "status", "role", "roles", "email_verified")}, "user": u}
 
         @r.get("/ping")
         def ping(authorization: str | None = Header(None)):
@@ -74,6 +76,9 @@ def create_auth_app(settings: Settings | None = None, store: Store | None = None
     if settings.service_token is not None and len(settings.service_token) < 32:
         raise RuntimeError("PORTAL_SERVICE_TOKEN must be at least 32 characters")
     mods = (AuthModule(), AdminModule(), AuditModule("/api/admin/auth-audit"), RBACModule(), InternalModule())
+    if settings.service_token is not None and any(len(t.strip()) < 32 for t in settings.service_token.split(",")):
+        raise RuntimeError("PORTAL_SERVICE_TOKEN must be at least 32 characters (comma-separate two while rotating)")
+    mods = (AuthModule(), AdminModule(), AuditModule("/api/admin/auth-audit"), RolesModule(), InternalModule())
     from dataclasses import replace
     settings = replace(settings, audit_db_access=True)  # the identity service records every read/write with its requester
     return build_app(settings, store, mailer or mailer_from_env(), mods, seed=False, ui=False)

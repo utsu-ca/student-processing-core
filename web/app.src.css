@@ -1,0 +1,41 @@
+/* Source for src/utsu_portal/static/app.css. Build: web/build-css.sh (Tailwind standalone CLI, no Node). */
+@import "tailwindcss";
+@source "../src/utsu_portal/static/*.html";
+@source "../src/utsu_portal/static/*.js";
+/* classes assembled at run time by the form renderer */
+@source inline("{card,primary,secondary,danger,err,ok,badge,help,opt,row,shot,yaml,status}");
+
+@layer base {
+  body { @apply m-0 bg-slate-100 font-sans text-base text-slate-900 antialiased; }
+  header { @apply flex flex-wrap items-center justify-between gap-3 bg-blue-950 px-4 py-2 text-white; }
+  header h1 { @apply m-0 text-lg font-semibold; }
+  nav { @apply flex flex-wrap items-center gap-3; }
+  nav a, nav button { @apply cursor-pointer border-0 bg-transparent p-1 text-white underline underline-offset-2 hover:text-blue-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white; }
+  main { @apply mx-auto my-4 max-w-3xl px-3 sm:px-4; }
+  label { @apply mt-3 mb-1 block font-semibold; }
+  input, select, textarea { @apply box-border w-full rounded-md border border-slate-400 bg-white px-3 py-2 text-base focus:border-blue-800 focus:outline-2 focus:outline-offset-1 focus:outline-blue-800; }
+  input[type=checkbox], input[type=radio] { @apply mr-2 h-4 w-auto; }
+  h2 { @apply mb-2 text-xl font-semibold; }
+  h3 { @apply mb-2 text-lg font-semibold; }
+  video, canvas, img.shot { @apply max-w-full rounded-md; }
+  :focus-visible { @apply outline-2 outline-offset-2 outline-blue-800; }
+}
+
+@layer components {
+  .card { @apply mb-4 rounded-lg bg-white p-4 shadow-sm ring-1 ring-slate-200; }
+  .help { @apply block text-sm font-normal text-slate-600; }
+  .opt { @apply block font-normal; }
+  button.primary { @apply mr-2 mt-2 min-h-11 cursor-pointer rounded-md border-0 bg-blue-900 px-4 py-2 font-medium text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50; }
+  button.secondary { @apply mr-2 mt-2 min-h-11 cursor-pointer rounded-md border border-slate-400 bg-white px-4 py-2 font-medium text-slate-900 hover:bg-slate-50; }
+  button.danger { @apply mr-2 mt-2 min-h-11 cursor-pointer rounded-md border-0 bg-red-800 px-4 py-2 font-medium text-white hover:bg-red-700; }
+  .err { @apply text-sm font-medium text-red-800; }
+  .ok { @apply font-medium text-green-800; }
+  .badge { @apply inline-block rounded-full bg-slate-200 px-3 py-0.5 text-sm text-slate-900; }
+  .row { @apply flex flex-col gap-4 sm:flex-row; }
+  .row > * { @apply flex-1; }
+  textarea.yaml { @apply min-h-80 font-mono text-sm; }
+  /* check-in verification banner */
+  .banner-ok { @apply mb-2 rounded-md bg-green-100 p-3 text-green-900 ring-1 ring-green-700; }
+  .banner-warn { @apply mb-2 rounded-md bg-amber-100 p-3 text-amber-900 ring-1 ring-amber-700; }
+  .big-name { @apply my-2 text-3xl font-bold; }
+}

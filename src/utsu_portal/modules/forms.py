@@ -40,8 +40,8 @@ class FormsModule:
     def router(self, ctx: Context) -> APIRouter:
         r = APIRouter(prefix="/api")
         S = ctx.store
-        admin = ctx.require_admin()
-        admin_q = ctx.require_admin(allow_query_token=True)
+        admin = ctx.require_role("forms_editor")
+        admin_q = ctx.require_role("forms_editor", allow_query_token=True)
         verified = ctx.require_verified()
 
         def published(fid: str) -> dict:

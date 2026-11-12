@@ -6,8 +6,8 @@
   function show(d) {
     result.replaceChildren();
     const c = document.createElement("div"); c.className = "card";
-    const msg = document.createElement("h2"); msg.className = d.already_checked_in ? "badge" : "ok"; msg.textContent = (d.already_checked_in ? "⚠ " : "✔ ") + d.message;
-    const n = document.createElement("p"); n.style.fontSize = "1.6rem"; n.textContent = d.name + (d.pronouns ? " (" + d.pronouns + ")" : "");
+    const msg = document.createElement("h2"); msg.className = d.already_checked_in ? "banner-warn" : "banner-ok"; msg.textContent = (d.already_checked_in ? "⚠ " : "✔ ") + d.message;
+    const n = document.createElement("p"); n.className = "big-name"; n.textContent = d.name + (d.pronouns ? " (" + d.pronouns + ")" : "");
     const meta = document.createElement("p"); meta.textContent = "Legal name: " + d.legal_name + (d.proxy ? " · voting by proxy" : "") + " · " + new Date(d.checked_in_at * 1000).toLocaleTimeString();
     c.append(msg, n, meta); result.append(c);
     const li = document.createElement("li"); li.textContent = d.name + (d.pronouns ? " (" + d.pronouns + ")" : "") + " — " + (d.already_checked_in ? "duplicate" : "checked in"); $("recent").prepend(li);

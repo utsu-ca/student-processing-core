@@ -34,7 +34,7 @@ class AgmModule:
     def router(self, ctx: Context) -> APIRouter:
         r = APIRouter(prefix="/api")
         S, cfg = ctx.store, ctx.settings
-        verified, admin = ctx.require_verified(), ctx.require_admin()
+        verified, admin = ctx.require_verified(), ctx.require_role("checkin")
 
         sso = ctx.services.get("sso")
         if sso and cfg.zoom_client_secret:  # Zoom may only sign on registrants who passed the separate online ID check

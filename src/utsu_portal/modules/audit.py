@@ -19,7 +19,7 @@ class AuditModule:
 
     def router(self, ctx: Context) -> APIRouter:
         r = APIRouter(prefix=self.prefix)
-        admin = ctx.require_admin()
+        admin = ctx.require_role("auditor")
         log: A.AuditLog = ctx.audit
 
         def entry(eid: str) -> dict:
@@ -54,7 +54,7 @@ class AuditModule:
             return [{k: v for k, v in m.items() if k != "id"} for m in log.months(("hot", "archived", "dropped"))]
 
         @r.post("/maintenance/run")
-        def run(force: bool = False, a: dict = admin):
+        def run(force: bool = False, a: dict = ctx.require_admin()):
             from .. import maintenance
             log.record(a["uuid"], "audit.maintenance_run", meta={"force": force})
             return maintenance.run_due(ctx, force)

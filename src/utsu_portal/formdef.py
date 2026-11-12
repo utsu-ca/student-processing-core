@@ -7,6 +7,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+
+try:
+    import re2  # google-re2: linear-time regex engine for untrusted (admin-authored) patterns
+except ImportError as e:  # pragma: no cover
+    raise RuntimeError("google-re2 is required for form patterns: pip install 'utsu-student-matching[portal]' (needs libre2 or a manylinux wheel)") from e
 from typing import Any
 
 import yaml
@@ -16,33 +21,42 @@ from .security import clean_text
 FIELD_TYPES = {"text", "textarea", "email", "number", "date", "select", "radio", "multiselect", "checkbox", "info"}
 MAX_FORM_BYTES = 200_000
 _ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-def safe_pattern(p: str) -> "re.Pattern[str]":
-    """Compile an admin-authored pattern only if it is a restricted, backtracking-safe subset (no catastrophic ReDoS in the
-    server or in every applicant's browser): no backreferences, lookarounds or conditionals; no quantified group, branch or
-    nested quantifier; bounded repeats; limited length. Raises ValueError/re.error otherwise."""
+def safe_pattern(p: str):
+    """Compile an admin-authored pattern with RE2 (linear time; no backreferences or lookarounds), the single gate used when a
+    form is saved and when a submission is checked. Because the browser re-runs the pattern with JavaScript's backtracking
+    RegExp, also require a JS-safe subset: no quantified groups (so no nested repeats), only plain `(?:` groups, and bounded
+    repeat counts. Raises ValueError (or re2.error) when rejected."""
     if not isinstance(p, str) or not p or len(p) > 200:
         raise ValueError("pattern length")
-    from re import _constants as C, _parser as P  # stdlib parse tree; no other way to inspect a pattern
-
-    def walk(items, in_repeat=False):
-        for op, av in items:
-            if op in (C.GROUPREF, C.GROUPREF_EXISTS, C.ASSERT, C.ASSERT_NOT, C.ATOMIC_GROUP, C.POSSESSIVE_REPEAT):
-                raise ValueError("unsupported construct")
-            if op in (C.MAX_REPEAT, C.MIN_REPEAT):
-                lo, hi, body = av
-                if lo > 256 or (hi != C.MAXREPEAT and hi > 256) or in_repeat:
-                    raise ValueError("repeat too large or nested")
-                if any(o in (C.SUBPATTERN, C.BRANCH) for o, _ in body):
-                    raise ValueError("quantified group")
-                walk(body, True)
-            elif op is C.SUBPATTERN:
-                walk(av[3], in_repeat)
-            elif op is C.BRANCH:
-                for br in av[1]:
-                    walk(br, in_repeat)
-
-    walk(P.parse(p))
-    return re.compile(p)
+    compiled = re2.compile(p)
+    i, n, in_class, groups = 0, len(p), False, []
+    while i < n:
+        c = p[i]
+        if c == "\\":
+            i += 2
+            continue
+        if in_class:
+            in_class = c != "]"
+        elif c == "[":
+            in_class = True
+            if p[i + 1:i + 2] == "^":
+                i += 1
+            if p[i + 1:i + 2] == "]":
+                i += 1
+        elif c == "(":
+            if p[i + 1:i + 2] == "?" and p[i + 1:i + 3] != "?:":
+                raise ValueError("only plain (?: groups are allowed")
+            groups.append(i)
+        elif c == ")":
+            groups.pop()
+            if p[i + 1:i + 2] in ("*", "+", "?", "{"):
+                raise ValueError("quantified groups are not allowed")
+        elif c == "{":
+            m = re.match(r"\{(\d+)(?:,(\d*))?\}", p[i:])
+            if m and any(g and int(g) > 256 for g in m.groups()):
+                raise ValueError("repeat count too large")
+        i += 1
+    return compiled
 
 
 _FIELD_KEYS = {"id", "type", "label", "help", "required", "options", "pattern", "min", "max", "show_if", "default"}
@@ -120,7 +134,7 @@ def validate_schema(raw: Any) -> dict:
         if "pattern" in f:
             try:
                 safe_pattern(f["pattern"])
-            except (re.error, TypeError, ValueError):
+            except (re.error, re2.error, TypeError, ValueError):
                 errs.append(f"{where}: invalid pattern")
         sif = f.get("show_if")
         if sif is not None:
@@ -193,7 +207,7 @@ def _coerce(f: dict, v: Any) -> Any:
             if pat is None:
                 try:
                     pat = safe_pattern(f["pattern"])
-                except (re.error, TypeError, ValueError):
+                except (re.error, re2.error, TypeError, ValueError):
                     raise FormError("invalid format")
                 f["_pattern_re"] = pat
             if not pat.fullmatch(s):

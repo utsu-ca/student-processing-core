@@ -122,3 +122,47 @@ The identity service (`utsu_portal.authsvc`) records everything in a tamper-evid
 - Admin API: `/api/admin/audit/{verify,checkpoints,checks,tables,archive/{month},maintenance/run}`.
 
 Limits: the HMAC chain cannot stop an attacker holding both the DB and `PORTAL_SECRET`; the external anchor is what covers that. The OTS/HTTP providers, the CronJob and non-SQLite stores are untested against real services.
+
+## Roles (RBAC)
+
+The auth service is the only issuer of roles (`modules/roles.py`). They are stored on the account (`roles`), exposed to the portal through the service-token-gated `/internal/accounts` projection (cached ~15 s, so a revocation reaches every service within that time), and are **not** embedded in session tokens.
+
+| Role | Grants |
+|---|---|
+| `admin` | everything, plus granting roles and running audit maintenance |
+| `verifier` | review face + ID verifications (portal and AGM) |
+| `forms_editor` | form drafts, publish/unpublish, submissions |
+| `checkin` | AGM check-in and attendance |
+| `finance` | club transactions and grants |
+| `clubs` | club registration decisions |
+| `auditor` | read/verify/export the audit log |
+
+Manage with `GET /api/admin/roles`, `GET /api/admin/roles/holders`, `PUT /api/admin/roles {username, roles}` (or the "Admin: roles" screen). Rules: admin only; no self-changes; the target must be a verified account; the last admin cannot be removed; each change is audited with before/after. `PORTAL_ADMIN_EMAILS` only bootstraps the first admin. Two admins demoting each other at the same instant could still leave none; recover by editing the account record directly. Legacy `role: admin` accounts keep working.
+
+### Enforcing roles in the database too
+
+The application checks above are the portable layer. Add database-side guards where the engine supports them (defence in depth if a service is compromised):
+
+- **Separate DB identities per service.** The auth service connects as `auth_rw`, the portal as `portal_rw`. Grant `portal_rw` nothing on `accounts`, `users`, `otps`, `student_ids`, `emails`, `verifications`, `media`, `audit_*`; the portal then cannot read or alter identities even with a bug or stolen credentials. Better: a separate database/schema per service.
+- **Append-only audit.** For `audit_*` tables grant the service `INSERT, SELECT` only (no `UPDATE/DELETE`), and run maintenance (archive/drop) under a separate `audit_maint` role. PostgreSQL/Supabase: `REVOKE UPDATE, DELETE ON ...`; Azure SQL: `DENY UPDATE, DELETE`.
+- **Row-level security.** PostgreSQL/Supabase `CREATE POLICY` (and Azure SQL `SECURITY POLICY`) can restrict applicants to rows they own using a session setting such as `SET app.uid = ...`. The generic key-value `SQLStore` stores JSON documents, so this only fits if you map the high-value collections to real columns. Treat it as an optional hardening step, not something the portable store does.
+- **Firestore.** Security rules apply only to client SDKs; server access is governed by IAM. Use one service account per service and a separate Firestore database (or project) for the auth service, since IAM cannot restrict individual collections.
+
+## Sharing secrets between containers
+
+Share as little as possible. What each container actually needs:
+
+| Secret | Auth service | Portal |
+|---|---|---|
+| `PORTAL_AUTH_SIGNING_KEY` (Ed25519 private) | yes | **never** |
+| `PORTAL_AUTH_PUBLIC_KEY` | no | yes (public, not secret) |
+| `PORTAL_SERVICE_TOKEN` | accepts | presents (the only shared secret) |
+| `PORTAL_SECRET` (pseudonymous ids, OTP hashing) | own value | own, different value |
+| `PORTAL_DATA_KEY`, DB credentials | own | own |
+
+Recommendations, strongest first:
+1. **Don't share, derive trust.** Replace the shared service token with mTLS (service mesh such as Istio/Linkerd, or cert-manager issued certs) or platform identity (GCP Workload Identity + Cloud Run IAM `run.invoker`, Azure managed identity, Kubernetes projected service-account tokens with `TokenReview`). Then no static secret exists to leak.
+2. **Secret manager, injected at start.** GCP Secret Manager, Azure Key Vault or HashiCorp Vault via External Secrets Operator or the Secrets Store CSI driver; mount as files and use the `*_FILE` variables so values never appear in `env`, logs or `docker inspect`. Scope each secret to one workload's identity (IAM/RBAC), enable audit logging on access.
+3. **Kubernetes Secrets, if used directly:** one Secret per service (`auth-secrets`, `portal-secrets`), encryption at rest with a KMS provider, RBAC limiting `get secrets`, `automountServiceAccountToken: false`, NetworkPolicy so only the portal reaches `/internal`.
+4. **Rotate without downtime.** `PORTAL_SERVICE_TOKEN` on the auth service accepts a comma-separated list: deploy `old,new` to the auth service, switch the portal to `new`, then drop `old`. Rotate `PORTAL_AUTH_SIGNING_KEY` by publishing the new public key beside the old (`PORTAL_AUTH_PUBLIC_KEY` accepts several PEMs) before signing with the new one. `PORTAL_SECRET` must never rotate (it derives identities).
+5. Never put secrets in images, ConfigMaps, git, or build args; keep `deploy/k8s/secret.example.yaml` out of the kustomization.

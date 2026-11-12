@@ -50,7 +50,7 @@ class AgmVerifyModule:
     def router(self, ctx: Context) -> APIRouter:
         r = APIRouter(prefix="/api")
         S, cfg = ctx.store, ctx.settings
-        verified, admin = ctx.require_verified(), ctx.require_admin()
+        verified, admin = ctx.require_verified(), ctx.require_role("verifier")
 
         def grant(uid: str) -> None:
             S.put("agm_grants", uid, {"uuid": uid, "exp": ctx.now() + cfg.agm_grant_ttl, "at": ctx.now()})

@@ -16,6 +16,26 @@ from .settings import Settings
 from .store import Conflict, Store
 
 
+# Portal-wide roles issued by the auth service. `admin` implies every other role and is the only one that can grant roles.
+ROLES = {
+    "admin": "everything, including granting roles",
+    "verifier": "review identity (face + ID) verifications, portal and AGM",
+    "forms_editor": "create/edit/publish forms; view and set submission statuses",
+    "checkin": "AGM check-in and attendance",
+    "finance": "club transactions and grants",
+    "clubs": "club registration decisions",
+    "auditor": "read, verify and export the audit log",
+}
+
+
+def roles_of(acct: dict) -> set[str]:
+    """Effective roles of an account record (or its projection). The legacy `role: admin` field still counts."""
+    r = set(acct.get("roles") or []) & set(ROLES)
+    if acct.get("role") == "admin":
+        r.add("admin")
+    return r
+
+
 @dataclass
 class Context:
     store: Store
@@ -109,10 +129,16 @@ class Context:
             return a
         return Depends(dep)
 
-    def require_admin(self, allow_query_token: bool = False) -> Callable:
+    def require_role(self, *roles: str, allow_query_token: bool = False) -> Callable:
+        """Allow verified accounts holding `admin` (superset) or any of `roles`. No roles given = admin only."""
+        want = {"admin", *roles}
+
         def dep(authorization: str | None = Header(None), token: str | None = Query(None) if allow_query_token else None) -> dict:
             a = self._account(authorization, token if allow_query_token else None)
-            if a.get("role") != "admin" or a["status"] != "verified":
-                raise HTTPException(403, "admin only")
+            if a["status"] != "verified" or not (roles_of(a) & want):
+                raise HTTPException(403, "insufficient role")
             return a
         return Depends(dep)
+
+    def require_admin(self, allow_query_token: bool = False) -> Callable:
+        return self.require_role(allow_query_token=allow_query_token)
